@@ -1,5 +1,5 @@
 import type { EChartsOption } from 'echarts'
-import { baseTooltip, darkChart } from '../../components/charts/EChart'
+import { baseTooltip, darkChart } from '../../components/charts/chartTheme'
 import type { EquityPoint, HoldBucket, SideBreakdown, SymbolBreakdown } from './compute'
 import { fmtUsd } from '../../lib/format'
 

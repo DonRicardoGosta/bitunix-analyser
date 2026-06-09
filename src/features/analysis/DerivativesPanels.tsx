@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
-import { EChart, baseTooltip, darkChart } from '../../components/charts/EChart'
+import { EChart } from '../../components/charts/EChart'
+import { baseTooltip, darkChart } from '../../components/charts/chartTheme'
 import type { LongShortPoint, OpenInterestPoint, TakerVolumePoint } from '../../lib/binance/types'
 import type { PricePoint } from '../../lib/binance/rest'
 import { useAnalysisLive } from '../../store/analysisLive'

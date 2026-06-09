@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
-import { EChart, baseTooltip, darkChart } from '../../components/charts/EChart'
+import { EChart } from '../../components/charts/EChart'
+import { baseTooltip, darkChart } from '../../components/charts/chartTheme'
 import type { Candle } from '../../lib/candles'
 import { macd, rsi, stochRsi } from '../../lib/indicators'
 

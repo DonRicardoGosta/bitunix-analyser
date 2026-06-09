@@ -43,6 +43,7 @@ export function CandlesChart({ candles, overlays, height = 460 }: Props) {
 
   useEffect(() => {
     if (!containerRef.current) return
+    const lineSeriesMap = lineRefs.current
     const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: {
@@ -82,7 +83,7 @@ export function CandlesChart({ candles, overlays, height = 460 }: Props) {
       chartRef.current = null
       candleRef.current = null
       volumeRef.current = null
-      lineRefs.current.clear()
+      lineSeriesMap.clear()
     }
   }, [])
 

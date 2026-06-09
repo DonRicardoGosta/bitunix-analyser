@@ -1,6 +1,6 @@
 import clsx from 'clsx'
 
-export const WINDOW_OPTIONS = [0.5, 1, 2, 5]
+const WINDOW_OPTIONS = [0.5, 1, 2, 5]
 
 export function WindowSelector({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (

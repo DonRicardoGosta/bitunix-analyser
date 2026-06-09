@@ -20,12 +20,11 @@ export function fmtPrice(value: number | string | undefined): string {
   const n = toNum(value, NaN)
   if (!Number.isFinite(n)) return '—'
   const abs = Math.abs(n)
-  let digits = 2
+  let digits: number
   if (abs < 0.0001) digits = 8
   else if (abs < 0.01) digits = 6
   else if (abs < 1) digits = 5
   else if (abs < 100) digits = 4
-  else if (abs < 10000) digits = 2
   else digits = 2
   return n.toLocaleString('en-US', {
     minimumFractionDigits: digits,

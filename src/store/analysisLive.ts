@@ -17,9 +17,15 @@ export interface TradePrint {
   buy: boolean
 }
 
+export interface CvdPoint {
+  time: number
+  cvd: number
+}
+
 const MAX_LIQUIDATIONS = 3000
 const MAX_DEPTH_SNAPSHOTS = 240
 const MAX_TRADES = 200
+const MAX_CVD = 1200
 
 interface AnalysisLiveState {
   symbol: string
@@ -27,6 +33,9 @@ interface AnalysisLiveState {
   depthHistory: DepthSnapshot[]
   trades: TradePrint[]
   cvd: number
+  cvdHistory: CvdPoint[]
+  buyVol: number
+  sellVol: number
   /** Reset all accumulated data when switching symbol. */
   ensureSymbol: (symbol: string) => void
   addLiquidation: (e: LiquidationEvent) => void
@@ -40,9 +49,21 @@ export const useAnalysisLive = create<AnalysisLiveState>((set, get) => ({
   depthHistory: [],
   trades: [],
   cvd: 0,
+  cvdHistory: [],
+  buyVol: 0,
+  sellVol: 0,
   ensureSymbol: (symbol) => {
     if (get().symbol === symbol) return
-    set({ symbol, liquidations: [], depthHistory: [], trades: [], cvd: 0 })
+    set({
+      symbol,
+      liquidations: [],
+      depthHistory: [],
+      trades: [],
+      cvd: 0,
+      cvdHistory: [],
+      buyVol: 0,
+      sellVol: 0,
+    })
   },
   addLiquidation: (e) =>
     set((state) => {
@@ -62,6 +83,14 @@ export const useAnalysisLive = create<AnalysisLiveState>((set, get) => ({
       const trades = [t, ...state.trades]
       if (trades.length > MAX_TRADES) trades.length = MAX_TRADES
       const cvd = state.cvd + (t.buy ? t.qty : -t.qty)
-      return { trades, cvd }
+      const cvdHistory = [...state.cvdHistory, { time: t.time, cvd }]
+      if (cvdHistory.length > MAX_CVD) cvdHistory.splice(0, cvdHistory.length - MAX_CVD)
+      return {
+        trades,
+        cvd,
+        cvdHistory,
+        buyVol: state.buyVol + (t.buy ? t.qty : 0),
+        sellVol: state.sellVol + (t.buy ? 0 : t.qty),
+      }
     }),
 }))

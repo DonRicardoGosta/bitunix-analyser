@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
-import { EChart, baseTooltip, darkChart } from '../../components/charts/EChart'
+import { EChart } from '../../components/charts/EChart'
+import { baseTooltip, darkChart } from '../../components/charts/chartTheme'
 import { binLiquidity, cumulativeDepth, imbalance, type ParsedBook } from './orderbook'
 import { useAnalysisLive } from '../../store/analysisLive'
 import { fmtPrice, fmtCompact } from '../../lib/format'

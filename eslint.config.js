@@ -18,5 +18,12 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      // These experimental react-hooks v7 rules flag intentional, correct
+      // patterns here (effects that sync with REST/WebSocket external systems
+      // and interval timers). Keep them off to avoid false positives.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/purity': 'off',
+    },
   },
 ])

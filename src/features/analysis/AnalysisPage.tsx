@@ -10,14 +10,16 @@ import { ChartTab } from './tabs/ChartTab'
 import { LiquidityTab } from './tabs/LiquidityTab'
 import { DerivativesTab } from './tabs/DerivativesTab'
 import { FlowTab } from './tabs/FlowTab'
+import { ScreenerTab } from './tabs/ScreenerTab'
 
-type TabKey = 'chart' | 'liquidity' | 'derivatives' | 'flow'
+type TabKey = 'chart' | 'liquidity' | 'derivatives' | 'flow' | 'screener'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'chart', label: 'Chart' },
   { key: 'liquidity', label: 'Liquidity' },
   { key: 'derivatives', label: 'Derivatives' },
   { key: 'flow', label: 'Order Flow' },
+  { key: 'screener', label: 'Screener' },
 ]
 
 export function AnalysisPage() {
@@ -98,6 +100,7 @@ export function AnalysisPage() {
       {tab === 'liquidity' && <LiquidityTab />}
       {tab === 'derivatives' && <DerivativesTab />}
       {tab === 'flow' && <FlowTab />}
+      {tab === 'screener' && <ScreenerTab />}
     </div>
   )
 }
