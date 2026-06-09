@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { useMarket } from '../../../store/market'
+import { useTickers } from '../../../store/tickers'
 import { useCandles } from '../useCandles'
 import { useOrderBook } from '../useOrderBook'
 import { useOpenInterest, useLongShort, useTakerFlow } from '../useDerivatives'
@@ -9,10 +10,11 @@ import { useAccount } from '../../stats/useStats'
 import { toBinancePeriod } from '../../../lib/bitunix/intervals'
 import { getFundingRate } from '../../../lib/bitunix/rest'
 import { buildSetup, type SetupResult, type TradePlan } from '../setup/engine'
+import { OrderTicket } from '../setup/OrderTicket'
 import { SetupChart, type PriceLineDef } from '../../../components/charts/SetupChart'
 import { Panel, Spinner, EmptyState, Badge } from '../../../components/ui/primitives'
 import { BinanceNote } from '../controls'
-import { fmtPrice, fmtUsd, fmtCompact, toNum } from '../../../lib/format'
+import { fmtPrice, toNum } from '../../../lib/format'
 
 export function SetupTab() {
   const symbol = useMarket((s) => s.symbol)
@@ -32,10 +34,15 @@ export function SetupTab() {
     retry: 0,
   })
   const account = useAccount()
+  const lastPrice = useTickers((s) => s.map[symbol]?.last ?? 0)
 
-  const [overlaySide, setOverlaySide] = useState<'LONG' | 'SHORT'>('LONG')
+  const [tradeSide, setTradeSideState] = useState<'LONG' | 'SHORT'>('LONG')
   const [showLevels, setShowLevels] = useState(true)
-  const [riskPct, setRiskPct] = useState(1)
+  const userPickedRef = useRef(false)
+  const chooseSide = (s: 'LONG' | 'SHORT') => {
+    userPickedRef.current = true
+    setTradeSideState(s)
+  }
 
   const setup = useMemo<SetupResult | null>(() => {
     if (candles.length < 30) return null
@@ -51,15 +58,21 @@ export function SetupTab() {
     })
   }, [candles, book, oi.data, ls.data, taker.data, funding.data])
 
-  // Default the chart overlay to the bias-preferred side once computed.
-  const preferred = setup ? (setup.bias >= 0 ? 'LONG' : 'SHORT') : 'LONG'
+  // Follow the bias-preferred side until the user explicitly picks one.
+  const preferred: 'LONG' | 'SHORT' = setup ? (setup.bias >= 0 ? 'LONG' : 'SHORT') : 'LONG'
+  useEffect(() => {
+    userPickedRef.current = false
+  }, [symbol])
+  useEffect(() => {
+    if (!userPickedRef.current) setTradeSideState(preferred)
+  }, [preferred, symbol])
 
   const lines = useMemo<PriceLineDef[]>(() => {
     if (!setup) return []
-    const plan = overlaySide === 'LONG' ? setup.long : setup.short
-    const isLong = overlaySide === 'LONG'
+    const plan = tradeSide === 'LONG' ? setup.long : setup.short
+    const isLong = tradeSide === 'LONG'
     const out: PriceLineDef[] = [
-      { price: plan.entry, color: isLong ? '#22c55e' : '#ef4444', title: `${overlaySide} entry`, width: 2 },
+      { price: plan.entry, color: isLong ? '#22c55e' : '#ef4444', title: `${tradeSide} entry`, width: 2 },
       { price: plan.stop, color: '#f43f5e', title: 'Stop', dashed: true },
       { price: plan.tp1, color: '#22d3ee', title: 'TP1' },
       { price: plan.tp2, color: '#14b8a6', title: 'TP2' },
@@ -76,7 +89,7 @@ export function SetupTab() {
       }
     }
     return out
-  }, [setup, overlaySide, showLevels])
+  }, [setup, tradeSide, showLevels])
 
   if (status === 'loading' || (!setup && status !== 'error')) {
     return (
@@ -105,9 +118,32 @@ export function SetupTab() {
       <BiasMeter setup={setup} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <PlanCard plan={setup.long} preferred={preferred === 'LONG'} biasLabel={setup.biasLabel} />
-        <PlanCard plan={setup.short} preferred={preferred === 'SHORT'} biasLabel={setup.biasLabel} />
+        <PlanCard
+          plan={setup.long}
+          preferred={preferred === 'LONG'}
+          biasLabel={setup.biasLabel}
+          active={tradeSide === 'LONG'}
+          onTrade={() => chooseSide('LONG')}
+        />
+        <PlanCard
+          plan={setup.short}
+          preferred={preferred === 'SHORT'}
+          biasLabel={setup.biasLabel}
+          active={tradeSide === 'SHORT'}
+          onTrade={() => chooseSide('SHORT')}
+        />
       </div>
+
+      <OrderTicket
+        symbol={symbol}
+        side={tradeSide}
+        onSideChange={chooseSide}
+        long={setup.long}
+        short={setup.short}
+        currentPrice={lastPrice || setup.price}
+        positionMode={account.data?.positionMode}
+        availableBalance={account.data ? toNum(account.data.available) : undefined}
+      />
 
       <Panel
         title="Setup map"
@@ -118,10 +154,10 @@ export function SetupTab() {
               {(['LONG', 'SHORT'] as const).map((s) => (
                 <button
                   key={s}
-                  onClick={() => setOverlaySide(s)}
+                  onClick={() => chooseSide(s)}
                   className={clsx(
                     'rounded-md px-2.5 py-1 text-xs font-medium',
-                    overlaySide === s
+                    tradeSide === s
                       ? s === 'LONG'
                         ? 'bg-emerald-500 text-zinc-950'
                         : 'bg-rose-500 text-zinc-950'
@@ -146,15 +182,6 @@ export function SetupTab() {
       >
         <SetupChart candles={candles} lines={lines} height={460} />
       </Panel>
-
-      {account.data ? (
-        <RiskSizer
-          plan={overlaySide === 'LONG' ? setup.long : setup.short}
-          equity={toNum(account.data.available) + toNum(account.data.margin)}
-          riskPct={riskPct}
-          setRiskPct={setRiskPct}
-        />
-      ) : null}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel title="Key levels" subtitle="Confluence of liquidity, volume profile, swings & indicators">
@@ -204,17 +231,25 @@ function PlanCard({
   plan,
   preferred,
   biasLabel,
+  active,
+  onTrade,
 }: {
   plan: TradePlan
   preferred: boolean
   biasLabel: string
+  active: boolean
+  onTrade: () => void
 }) {
   const isLong = plan.side === 'LONG'
   return (
     <section
       className={clsx(
         'panel p-4',
-        preferred && (isLong ? 'ring-1 ring-emerald-500/40' : 'ring-1 ring-rose-500/40'),
+        active
+          ? isLong
+            ? 'ring-2 ring-emerald-500/60'
+            : 'ring-2 ring-rose-500/60'
+          : preferred && (isLong ? 'ring-1 ring-emerald-500/40' : 'ring-1 ring-rose-500/40'),
       )}
     >
       <header className="mb-3 flex items-center justify-between">
@@ -223,9 +258,20 @@ function PlanCard({
           {preferred && <Badge tone="accent">Preferred · bias {biasLabel}</Badge>}
           {!plan.valid && <Badge tone="warn">Weak</Badge>}
         </div>
-        <div className="text-right">
-          <div className="text-[11px] uppercase tracking-wide text-zinc-500">Confidence</div>
-          <div className="tabular text-sm font-semibold text-zinc-100">{plan.confidence.toFixed(0)}%</div>
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <div className="text-[11px] uppercase tracking-wide text-zinc-500">Confidence</div>
+            <div className="tabular text-sm font-semibold text-zinc-100">{plan.confidence.toFixed(0)}%</div>
+          </div>
+          <button
+            onClick={onTrade}
+            className={clsx(
+              'rounded-lg px-3 py-1.5 text-xs font-semibold',
+              isLong ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400' : 'bg-rose-500 text-zinc-950 hover:bg-rose-400',
+            )}
+          >
+            Trade {plan.side}
+          </button>
         </div>
       </header>
 
@@ -279,45 +325,6 @@ function Metric({
         {value}
       </div>
     </div>
-  )
-}
-
-function RiskSizer({
-  plan,
-  equity,
-  riskPct,
-  setRiskPct,
-}: {
-  plan: TradePlan
-  equity: number
-  riskPct: number
-  setRiskPct: (v: number) => void
-}) {
-  const riskAmount = (equity * riskPct) / 100
-  const perUnitRisk = Math.abs(plan.entry - plan.stop)
-  const qty = perUnitRisk > 0 ? riskAmount / perUnitRisk : 0
-  const notional = qty * plan.entry
-  return (
-    <Panel title="Position sizing" subtitle={`Based on your available balance (${fmtUsd(equity)}) and ${plan.side} stop`}>
-      <div className="flex flex-wrap items-center gap-4">
-        <label className="flex items-center gap-2 text-sm text-zinc-400">
-          Risk
-          <input
-            type="number"
-            min={0.1}
-            max={100}
-            step={0.1}
-            value={riskPct}
-            onChange={(e) => setRiskPct(Math.max(0.1, Number(e.target.value) || 0.1))}
-            className="w-20 rounded-md border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-cyan-500"
-          />
-          %
-        </label>
-        <Metric label="Risk amount" value={fmtUsd(riskAmount)} tone="down" />
-        <Metric label="Position size" value={`${fmtCompact(qty, 3)} ${''}`} />
-        <Metric label="Notional" value={`$${fmtCompact(notional)}`} />
-      </div>
-    </Panel>
   )
 }
 
