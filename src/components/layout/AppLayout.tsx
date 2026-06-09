@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import clsx from 'clsx'
-import { useTickerStream } from '../../hooks/useTickerStream'
+import { useTickersPoll } from '../../hooks/useTickersPoll'
 import { useTickers } from '../../store/tickers'
 import { useMarket } from '../../store/market'
 import { useCredentials } from '../../store/credentials'
@@ -14,7 +14,7 @@ const NAV = [
 ]
 
 export function AppLayout() {
-  useTickerStream()
+  useTickersPoll()
   const connected = useTickers((s) => s.connected)
   const symbol = useMarket((s) => s.symbol)
   const ticker = useTickers((s) => s.map[symbol])

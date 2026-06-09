@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { toNum } from '../lib/format'
+import type { TickerRaw } from '../lib/bitunix/types'
 
 export interface LiveTicker {
   symbol: string
@@ -34,21 +35,23 @@ export const useTickers = create<TickersState>((set) => ({
     }),
 }))
 
-/** Normalize a raw Bitunix tickers-stream item into a LiveTicker. */
-export function parseStreamTicker(item: Record<string, unknown>, ts: number): LiveTicker | null {
-  const symbol = item.s as string
-  if (!symbol) return null
+/** Normalize a Bitunix REST ticker row into a LiveTicker. */
+export function parseRestTicker(t: TickerRaw, ts: number): LiveTicker | null {
+  if (!t.symbol) return null
+  const last = toNum(t.lastPrice)
+  const open = toNum(t.open)
+  const changePct = open > 0 ? ((last - open) / open) * 100 : 0
   return {
-    symbol,
-    last: toNum(item.la),
-    open: toNum(item.o),
-    high: toNum(item.h),
-    low: toNum(item.l),
-    baseVol: toNum(item.b),
-    quoteVol: toNum(item.q),
-    changePct: toNum(item.r),
-    bestBid: toNum(item.bd),
-    bestAsk: toNum(item.ak),
+    symbol: t.symbol,
+    last,
+    open,
+    high: toNum(t.high),
+    low: toNum(t.low),
+    baseVol: toNum(t.baseVol),
+    quoteVol: toNum(t.quoteVol),
+    changePct,
+    bestBid: last,
+    bestAsk: last,
     ts,
   }
 }
