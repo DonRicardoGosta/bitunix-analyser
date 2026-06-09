@@ -121,8 +121,15 @@ export function getTickers(symbols?: string): Promise<TickerRaw[]> {
   return publicGet<TickerRaw[]>('/api/v1/futures/market/tickers', symbols ? { symbols } : undefined)
 }
 
-export function getFundingRate(symbol: string): Promise<FundingRateRaw[]> {
-  return publicGet<FundingRateRaw[]>('/api/v1/futures/market/funding_rate', { symbol })
+export async function getFundingRate(symbol: string): Promise<FundingRateRaw | null> {
+  // The live API returns a single object here, while the docs show an array;
+  // normalize both shapes.
+  const data = await publicGet<FundingRateRaw | FundingRateRaw[]>(
+    '/api/v1/futures/market/funding_rate',
+    { symbol },
+  )
+  if (Array.isArray(data)) return data[0] ?? null
+  return data ?? null
 }
 
 export function getTradingPairs(): Promise<TradingPairRaw[]> {

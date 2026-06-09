@@ -1,20 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import clsx from 'clsx'
 import { useMarket } from '../../store/market'
+import { useAnalysisLive } from '../../store/analysisLive'
 import { INTERVALS } from '../../lib/bitunix/intervals'
 import type { KlineInterval } from '../../lib/bitunix/rest'
-import { useCandles } from './useCandles'
-import { CandlesChart, type OverlayToggles } from '../../components/charts/CandlesChart'
-import { RsiPanel, MacdPanel, StochRsiPanel } from './IndicatorPanels'
 import { SymbolPicker } from './SymbolPicker'
-import { Panel, Spinner, ErrorNote } from '../../components/ui/primitives'
-import clsx from 'clsx'
+import { FundingWidget } from './FundingWidget'
+import { ChartTab } from './tabs/ChartTab'
+import { LiquidityTab } from './tabs/LiquidityTab'
+import { DerivativesTab } from './tabs/DerivativesTab'
+import { FlowTab } from './tabs/FlowTab'
 
-const OVERLAY_LABELS: { key: keyof OverlayToggles; label: string }[] = [
-  { key: 'ema9', label: 'EMA 9' },
-  { key: 'ema21', label: 'EMA 21' },
-  { key: 'ema50', label: 'EMA 50' },
-  { key: 'bb', label: 'Bollinger' },
-  { key: 'vwap', label: 'VWAP' },
+type TabKey = 'chart' | 'liquidity' | 'derivatives' | 'flow'
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'chart', label: 'Chart' },
+  { key: 'liquidity', label: 'Liquidity' },
+  { key: 'derivatives', label: 'Derivatives' },
+  { key: 'flow', label: 'Order Flow' },
 ]
 
 export function AnalysisPage() {
@@ -23,17 +26,14 @@ export function AnalysisPage() {
   const setInterval = useMarket((s) => s.setInterval)
   const priceType = useMarket((s) => s.priceType)
   const setPriceType = useMarket((s) => s.setPriceType)
+  const ensureSymbol = useAnalysisLive((s) => s.ensureSymbol)
 
-  const [overlays, setOverlays] = useState<OverlayToggles>({
-    ema9: true,
-    ema21: false,
-    ema50: true,
-    bb: false,
-    vwap: true,
-  })
-  const [subPanels, setSubPanels] = useState({ rsi: true, macd: true, stoch: false })
+  const [tab, setTab] = useState<TabKey>('chart')
 
-  const { candles, status, error } = useCandles(symbol, interval, priceType)
+  // Reset accumulated live data (liquidations, depth, trades) when symbol changes.
+  useEffect(() => {
+    ensureSymbol(symbol)
+  }, [symbol, ensureSymbol])
 
   return (
     <div className="flex flex-col gap-4">
@@ -70,81 +70,34 @@ export function AnalysisPage() {
             </button>
           ))}
         </div>
+
+        <div className="ml-auto">
+          <FundingWidget symbol={symbol} />
+        </div>
       </div>
 
-      {/* Price chart */}
-      <Panel
-        title={`${symbol} · ${interval}`}
-        subtitle="Bitunix price candles with indicator overlays"
-        actions={
-          <div className="flex flex-wrap items-center gap-1">
-            {OVERLAY_LABELS.map((o) => (
-              <button
-                key={o.key}
-                onClick={() => setOverlays((prev) => ({ ...prev, [o.key]: !prev[o.key] }))}
-                className={clsx(
-                  'rounded-md px-2 py-0.5 text-[11px] font-medium',
-                  overlays[o.key]
-                    ? 'bg-cyan-500/15 text-cyan-300'
-                    : 'border border-zinc-800 text-zinc-500 hover:text-zinc-300',
-                )}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-        }
-      >
-        {status === 'loading' && <Spinner label="Loading candles…" />}
-        {status === 'error' && <ErrorNote error={error} />}
-        <div className={status === 'loading' ? 'hidden' : ''}>
-          <CandlesChart candles={candles} overlays={overlays} height={460} />
-        </div>
-      </Panel>
-
-      {/* Secondary indicators */}
-      <div className="flex flex-wrap items-center gap-1">
-        {(
-          [
-            ['rsi', 'RSI'],
-            ['macd', 'MACD'],
-            ['stoch', 'Stoch RSI'],
-          ] as const
-        ).map(([key, label]) => (
+      {/* Sub-tabs */}
+      <div className="flex items-center gap-1 border-b border-zinc-800">
+        {TABS.map((t) => (
           <button
-            key={key}
-            onClick={() => setSubPanels((p) => ({ ...p, [key]: !p[key] }))}
+            key={t.key}
+            onClick={() => setTab(t.key)}
             className={clsx(
-              'rounded-md px-2.5 py-1 text-xs font-medium',
-              subPanels[key]
-                ? 'bg-cyan-500/15 text-cyan-300'
-                : 'border border-zinc-800 text-zinc-500 hover:text-zinc-300',
+              '-mb-px border-b-2 px-4 py-2 text-sm font-medium transition',
+              tab === t.key
+                ? 'border-cyan-400 text-cyan-300'
+                : 'border-transparent text-zinc-400 hover:text-zinc-200',
             )}
           >
-            {label}
+            {t.label}
           </button>
         ))}
       </div>
 
-      {status === 'ready' && (
-        <div className="grid grid-cols-1 gap-4">
-          {subPanels.rsi && (
-            <Panel title="RSI (14)">
-              <RsiPanel candles={candles} />
-            </Panel>
-          )}
-          {subPanels.macd && (
-            <Panel title="MACD (12, 26, 9)">
-              <MacdPanel candles={candles} />
-            </Panel>
-          )}
-          {subPanels.stoch && (
-            <Panel title="Stochastic RSI">
-              <StochRsiPanel candles={candles} />
-            </Panel>
-          )}
-        </div>
-      )}
+      {tab === 'chart' && <ChartTab />}
+      {tab === 'liquidity' && <LiquidityTab />}
+      {tab === 'derivatives' && <DerivativesTab />}
+      {tab === 'flow' && <FlowTab />}
     </div>
   )
 }
