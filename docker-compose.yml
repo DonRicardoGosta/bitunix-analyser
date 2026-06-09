@@ -1,0 +1,8 @@
+services:
+  bitunix-analytics:
+    build: .
+    image: bitunix-analytics
+    container_name: bitunix-analytics
+    ports:
+      - "8080:80"
+    restart: unless-stopped
