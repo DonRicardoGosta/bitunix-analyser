@@ -40,6 +40,21 @@ export function getDepth(symbol: string, limit = 1000): Promise<BinanceDepth> {
   return get<BinanceDepth>('/fapi/v1/depth', { symbol, limit })
 }
 
+export interface PricePoint {
+  time: number
+  close: number
+}
+
+/** Lightweight price series (close) for overlaying on derivative charts. */
+export async function getKlineCloses(
+  symbol: string,
+  interval: string,
+  limit = 200,
+): Promise<PricePoint[]> {
+  const rows = await get<unknown[][]>('/fapi/v1/klines', { symbol, interval, limit })
+  return rows.map((r) => ({ time: Number(r[0]), close: Number(r[4]) }))
+}
+
 export function getOpenInterestHist(
   symbol: string,
   period: BinancePeriod = '5m',
