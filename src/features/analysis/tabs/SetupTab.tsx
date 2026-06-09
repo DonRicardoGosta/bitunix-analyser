@@ -140,7 +140,7 @@ export function SetupTab() {
         onSideChange={chooseSide}
         long={setup.long}
         short={setup.short}
-        currentPrice={lastPrice || setup.price}
+        currentPrice={setup.price || lastPrice}
         positionMode={account.data?.positionMode}
         availableBalance={account.data ? toNum(account.data.available) : undefined}
       />

@@ -54,7 +54,7 @@ export function OrderTicket({
 
   const [leverage, setLeverage] = useState(spec.defaultLeverage)
   const [margin, setMargin] = useState('100')
-  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT')
+  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('MARKET')
   const [tpMode, setTpMode] = useState<TpMode>('TP1')
   const [split, setSplit] = useState(0.5)
   const [entry, setEntry] = useState('')
@@ -369,7 +369,10 @@ export function OrderTicket({
           </div>
 
           {projection.warnings.map((w, i) => (
-            <p key={i} className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{w}</p>
+            <p key={`w${i}`} className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{w}</p>
+          ))}
+          {projection.notices.map((n, i) => (
+            <p key={`n${i}`} className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">{n}</p>
           ))}
 
           {!hasKeys && (

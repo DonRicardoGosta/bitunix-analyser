@@ -60,6 +60,8 @@ export interface OrderProjection {
   liqPrice: number
   rr: number
   warnings: string[]
+  /** Non-blocking informational notes (e.g. stop beyond liquidation). */
+  notices: string[]
 }
 
 export interface ProjectInput {
@@ -104,6 +106,14 @@ export function projectOrder(input: ProjectInput): OrderProjection {
 
   const profitTotal = legs.reduce((a, l) => a + l.profit, 0)
   const lossPnl = pnlAt(side, entry, stop, qty)
+  const lossRoiPct = margin > 0 ? (lossPnl / margin) * 100 : 0
+
+  const notices: string[] = []
+  if (Math.abs(lossRoiPct) > 100) {
+    notices.push(
+      'Stop-loss is beyond the liquidation price at this leverage — you would be liquidated before it triggers. Lower the leverage or tighten the stop.',
+    )
+  }
 
   // Weighted-average TP for the R:R headline.
   const totalLegQty = legs.reduce((a, l) => a + l.qty, 0) || qty
@@ -132,9 +142,10 @@ export function projectOrder(input: ProjectInput): OrderProjection {
     profitTotal,
     profitRoiPct: margin > 0 ? (profitTotal / margin) * 100 : 0,
     lossPnl,
-    lossRoiPct: margin > 0 ? (lossPnl / margin) * 100 : 0,
+    lossRoiPct,
     liqPrice,
     rr,
     warnings,
+    notices,
   }
 }
