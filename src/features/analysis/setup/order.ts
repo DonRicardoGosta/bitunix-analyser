@@ -76,6 +76,9 @@ export interface ProjectInput {
   /** Fraction (0..1) of qty closed at TP1 when tpMode === 'BOTH'. */
   split: number
   spec: SymbolSpec
+  marginMode: 'CROSS' | 'ISOLATION'
+  /** Free balance backing a cross position (used for the liq. estimate). */
+  availableBalance?: number
 }
 
 function pnlAt(side: 'LONG' | 'SHORT', entry: number, price: number, qty: number): number {
@@ -83,8 +86,10 @@ function pnlAt(side: 'LONG' | 'SHORT', entry: number, price: number, qty: number
 }
 
 export function projectOrder(input: ProjectInput): OrderProjection {
-  const { side, entry, stop, tp1, tp2, leverage, margin, tpMode, split, spec } = input
+  const { side, entry, stop, tp1, tp2, leverage, margin, tpMode, split, spec, marginMode, availableBalance } =
+    input
   const warnings: string[] = []
+  const isCross = marginMode === 'CROSS'
 
   const qty = floorToPrecision((margin * leverage) / entry, spec.basePrecision)
   const notional = qty * entry
@@ -108,10 +113,16 @@ export function projectOrder(input: ProjectInput): OrderProjection {
   const lossPnl = pnlAt(side, entry, stop, qty)
   const lossRoiPct = margin > 0 ? (lossPnl / margin) * 100 : 0
 
+  // Loss buffer before liquidation: isolated = the position margin; cross = the
+  // whole free balance backs the position (falls back to margin if unknown).
+  const buffer = isCross ? (availableBalance && availableBalance > 0 ? availableBalance : margin) : margin
+
   const notices: string[] = []
-  if (Math.abs(lossRoiPct) > 100) {
+  if (buffer > 0 && Math.abs(lossPnl) >= buffer) {
     notices.push(
-      'Stop-loss is beyond the liquidation price at this leverage — you would be liquidated before it triggers. Lower the leverage or tighten the stop.',
+      isCross
+        ? 'Loss at the stop exceeds your available balance — a cross position would be liquidated before the stop triggers. Lower leverage/size or tighten the stop.'
+        : 'Stop-loss is beyond the liquidation price at this leverage — you would be liquidated before it triggers. Lower the leverage or tighten the stop.',
     )
   }
 
@@ -120,8 +131,11 @@ export function projectOrder(input: ProjectInput): OrderProjection {
   const blendedTp = legs.reduce((a, l) => a + l.tp * l.qty, 0) / totalLegQty
   const rr = Math.abs(entry - stop) > 0 ? Math.abs(blendedTp - entry) / Math.abs(entry - stop) : 0
 
-  // Approximate isolated-margin liquidation price (excludes fees/funding/MMR).
-  const liqPrice = side === 'LONG' ? entry * (1 - 1 / leverage) : entry * (1 + 1 / leverage)
+  // Approximate liquidation price (excludes fees/funding/MMR). For isolated the
+  // buffer is the position margin (=> entry*(1 ∓ 1/leverage)); for cross the
+  // whole free balance backs it, pushing liquidation further away.
+  const liqFraction = notional > 0 ? Math.min(buffer / notional, 1) : 0
+  const liqPrice = side === 'LONG' ? entry * (1 - liqFraction) : entry * (1 + liqFraction)
 
   if (spec.minTradeVolume > 0 && qty < spec.minTradeVolume) {
     warnings.push(

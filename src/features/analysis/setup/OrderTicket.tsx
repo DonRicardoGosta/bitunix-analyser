@@ -55,6 +55,7 @@ export function OrderTicket({
   const [leverage, setLeverage] = useState(spec.defaultLeverage)
   const [margin, setMargin] = useState('100')
   const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('MARKET')
+  const [marginMode, setMarginMode] = useState<'CROSS' | 'ISOLATION'>('CROSS')
   const [tpMode, setTpMode] = useState<TpMode>('TP1')
   const [split, setSplit] = useState(0.5)
   const [entry, setEntry] = useState('')
@@ -94,8 +95,10 @@ export function OrderTicket({
         tpMode,
         split,
         spec,
+        marginMode,
+        availableBalance,
       }),
-    [side, effectiveEntry, stop, tp1, tp2, leverage, margin, tpMode, split, spec],
+    [side, effectiveEntry, stop, tp1, tp2, leverage, margin, tpMode, split, spec, marginMode, availableBalance],
   )
 
   const presets = LEVERAGE_PRESETS.filter((p) => p >= spec.minLeverage && p <= spec.maxLeverage)
@@ -108,7 +111,7 @@ export function OrderTicket({
     try {
       setSubmit({ kind: 'submitting', step: 'Setting margin mode…' })
       try {
-        await changeMarginMode(symbol, 'ISOLATION', marginCoin)
+        await changeMarginMode(symbol, marginMode, marginCoin)
       } catch {
         // Margin mode can't change with an open position/order — ignore and continue.
       }
@@ -278,6 +281,25 @@ export function OrderTicket({
             </button>
           </div>
 
+          {/* Margin mode */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] uppercase tracking-wide text-zinc-500">Margin mode</span>
+            <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+              {(['CROSS', 'ISOLATION'] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMarginMode(m)}
+                  className={clsx(
+                    'rounded-md px-2.5 py-1 text-xs font-medium',
+                    marginMode === m ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200',
+                  )}
+                >
+                  {m === 'CROSS' ? 'Cross' : 'Isolated'}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Prices */}
           <div className="grid grid-cols-2 gap-2">
             <PriceInput
@@ -414,6 +436,7 @@ export function OrderTicket({
           symbol={symbol}
           side={side}
           orderType={orderType}
+          marginMode={marginMode}
           leverage={leverage}
           margin={toNum(margin)}
           marginCoin={marginCoin}
@@ -480,6 +503,7 @@ function ConfirmModal({
   symbol,
   side,
   orderType,
+  marginMode,
   leverage,
   margin,
   marginCoin,
@@ -490,6 +514,7 @@ function ConfirmModal({
   symbol: string
   side: 'LONG' | 'SHORT'
   orderType: string
+  marginMode: 'CROSS' | 'ISOLATION'
   leverage: number
   margin: number
   marginCoin: string
@@ -507,12 +532,13 @@ function ConfirmModal({
           Confirm {side} · {symbol}
         </h3>
         <p className="mt-1 text-xs text-amber-300/80">
-          This places a real {orderType.toLowerCase()} order with leverage on your Bitunix account.
+          This places a real {orderType.toLowerCase()} order on Bitunix futures ({marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x).
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
           <Row label="Side" value={side} />
           <Row label="Type" value={orderType} />
+          <Row label="Margin mode" value={marginMode === 'CROSS' ? 'Cross' : 'Isolated'} />
           <Row label="Leverage" value={`${leverage}x`} />
           <Row label="Margin" value={`${fmtUsd(margin)} ${marginCoin}`} />
           <Row label="Entry" value={fmtPrice(projection.entry)} />
