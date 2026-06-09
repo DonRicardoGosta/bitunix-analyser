@@ -14,7 +14,11 @@ import type {
   HistoryPositionPage,
   HistoryTradePage,
   KlineRaw,
+  LeverageMarginMode,
+  MarginMode,
+  OrderResult,
   PendingPositionRaw,
+  PlaceOrderParams,
   TickerRaw,
   TradingPairRaw,
 } from './types'
@@ -83,6 +87,41 @@ export async function privateGet<T>(path: string, params?: QueryParams): Promise
   return parseEnvelope<T>(res)
 }
 
+/**
+ * Private POST — the signed body MUST be the exact compact JSON string that is
+ * sent, so we stringify once and reuse it for both signing and the request.
+ */
+export async function privatePost<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const { apiKey, secretKey } = getCredentials()
+  if (!apiKey || !secretKey) throw new BitunixError(-1, 'API key/secret not set')
+
+  const nonce = makeNonce()
+  const timestamp = Date.now().toString()
+  const bodyStr = JSON.stringify(body) // compact, no spaces
+  const sign = await signRequest({
+    apiKey,
+    secretKey,
+    nonce,
+    timestamp,
+    queryParams: '',
+    body: bodyStr,
+  })
+
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      'api-key': apiKey,
+      nonce,
+      timestamp,
+      sign,
+      language: 'en-US',
+      'Content-Type': 'application/json',
+    },
+    body: bodyStr,
+  })
+  return parseEnvelope<T>(res)
+}
+
 // ---- Public market data ----
 
 export type KlineInterval =
@@ -132,8 +171,11 @@ export async function getFundingRate(symbol: string): Promise<FundingRateRaw | n
   return data ?? null
 }
 
-export function getTradingPairs(): Promise<TradingPairRaw[]> {
-  return publicGet<TradingPairRaw[]>('/api/v1/futures/market/trading_pairs')
+export function getTradingPairs(symbols?: string): Promise<TradingPairRaw[]> {
+  return publicGet<TradingPairRaw[]>(
+    '/api/v1/futures/market/trading_pairs',
+    symbols ? { symbols } : undefined,
+  )
 }
 
 // ---- Private account / trading data ----
@@ -167,6 +209,38 @@ export function getHistoryTrades(params?: {
   limit?: number
 }): Promise<HistoryTradePage> {
   return privateGet<HistoryTradePage>('/api/v1/futures/trade/get_history_trades', params)
+}
+
+// ---- Trading (order placement & account settings) ----
+
+export function placeOrder(params: PlaceOrderParams): Promise<OrderResult> {
+  return privatePost<OrderResult>('/api/v1/futures/trade/place_order', { ...params })
+}
+
+export function changeLeverage(
+  symbol: string,
+  leverage: number,
+  marginCoin = 'USDT',
+): Promise<unknown> {
+  return privatePost('/api/v1/futures/account/change_leverage', { symbol, leverage, marginCoin })
+}
+
+export function changeMarginMode(
+  symbol: string,
+  marginMode: MarginMode,
+  marginCoin = 'USDT',
+): Promise<unknown> {
+  return privatePost('/api/v1/futures/account/change_margin_mode', { symbol, marginMode, marginCoin })
+}
+
+export function getLeverageMarginMode(
+  symbol: string,
+  marginCoin = 'USDT',
+): Promise<LeverageMarginMode> {
+  return privateGet<LeverageMarginMode>('/api/v1/futures/account/get_leverage_margin_mode', {
+    symbol,
+    marginCoin,
+  })
 }
 
 /** Lightweight connection test used by the Settings page. */

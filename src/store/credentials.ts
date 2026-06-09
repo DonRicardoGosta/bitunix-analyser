@@ -8,8 +8,11 @@ export interface Credentials {
 }
 
 interface CredentialsState extends Credentials {
+  /** Safety gate: real orders can only be placed when this is explicitly on. */
+  liveTradingEnabled: boolean
   hasKeys: () => boolean
   setCredentials: (c: Partial<Credentials>) => void
+  setLiveTradingEnabled: (v: boolean) => void
   clear: () => void
 }
 
@@ -19,9 +22,11 @@ export const useCredentials = create<CredentialsState>()(
       apiKey: '',
       secretKey: '',
       marginCoin: 'USDT',
+      liveTradingEnabled: false,
       hasKeys: () => Boolean(get().apiKey && get().secretKey),
       setCredentials: (c) => set((s) => ({ ...s, ...c })),
-      clear: () => set({ apiKey: '', secretKey: '', marginCoin: 'USDT' }),
+      setLiveTradingEnabled: (v) => set({ liveTradingEnabled: v }),
+      clear: () => set({ apiKey: '', secretKey: '', marginCoin: 'USDT', liveTradingEnabled: false }),
     }),
     {
       name: 'bitunix-credentials',
@@ -29,6 +34,7 @@ export const useCredentials = create<CredentialsState>()(
         apiKey: s.apiKey,
         secretKey: s.secretKey,
         marginCoin: s.marginCoin,
+        liveTradingEnabled: s.liveTradingEnabled,
       }),
     },
   ),

@@ -7,6 +7,8 @@ import { fmtUsd } from '../../lib/format'
 
 export function SettingsPage() {
   const { apiKey, secretKey, marginCoin, setCredentials, clear } = useCredentials()
+  const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
+  const setLiveTradingEnabled = useCredentials((s) => s.setLiveTradingEnabled)
   const [localKey, setLocalKey] = useState(apiKey)
   const [localSecret, setLocalSecret] = useState(secretKey)
   const [localCoin, setLocalCoin] = useState(marginCoin || 'USDT')
@@ -136,6 +138,42 @@ export function SettingsPage() {
               <Mini label="Mode" value={account.positionMode} />
             </div>
           )}
+        </div>
+      </Panel>
+
+      <Panel title="Live trading" subtitle="Allow this app to place real orders on your account">
+        <div className="flex items-start justify-between gap-4">
+          <div className="text-sm text-zinc-400">
+            <p>
+              When enabled, the Setup tab can open real futures positions (with leverage, margin and
+              attached TP/SL) on your Bitunix account. Every order still requires a confirmation.
+            </p>
+            <p className="mt-2 text-amber-300/80">
+              This uses real funds and can result in losses or liquidation. Keep it off unless you
+              intend to trade from here.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={liveTradingEnabled}
+            onClick={() => setLiveTradingEnabled(!liveTradingEnabled)}
+            className={
+              'relative h-7 w-12 shrink-0 rounded-full transition ' +
+              (liveTradingEnabled ? 'bg-emerald-500' : 'bg-zinc-700')
+            }
+          >
+            <span
+              className={
+                'absolute top-1 h-5 w-5 rounded-full bg-white transition ' +
+                (liveTradingEnabled ? 'left-6' : 'left-1')
+              }
+            />
+          </button>
+        </div>
+        <div className="mt-3">
+          <Badge tone={liveTradingEnabled ? 'up' : 'neutral'}>
+            {liveTradingEnabled ? 'Live trading ENABLED' : 'Live trading disabled'}
+          </Badge>
         </div>
       </Panel>
 

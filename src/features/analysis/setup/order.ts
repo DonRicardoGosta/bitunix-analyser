@@ -1,0 +1,140 @@
+import type { TradingPairRaw } from '../../../lib/bitunix/types'
+import { toNum } from '../../../lib/format'
+
+export type TpMode = 'TP1' | 'TP2' | 'BOTH'
+
+export interface SymbolSpec {
+  symbol: string
+  basePrecision: number
+  quotePrecision: number
+  minTradeVolume: number
+  minLeverage: number
+  maxLeverage: number
+  defaultLeverage: number
+}
+
+export function parseSpec(raw: TradingPairRaw | undefined, symbol: string): SymbolSpec {
+  return {
+    symbol,
+    basePrecision: raw?.basePrecision ?? 3,
+    quotePrecision: raw?.quotePrecision ?? 2,
+    minTradeVolume: toNum(raw?.minTradeVolume, 0),
+    minLeverage: Math.max(1, Math.round(toNum(raw?.minLeverage, 1))),
+    maxLeverage: Math.max(1, Math.round(toNum(raw?.maxLeverage, 100))),
+    defaultLeverage: Math.max(1, Math.round(toNum(raw?.defaultLeverage, 20))),
+  }
+}
+
+export function floorToPrecision(value: number, decimals: number): number {
+  if (!Number.isFinite(value)) return 0
+  const f = Math.pow(10, Math.max(0, decimals))
+  return Math.floor(value * f) / f
+}
+
+export function roundToPrecision(value: number, decimals: number): number {
+  if (!Number.isFinite(value)) return 0
+  const f = Math.pow(10, Math.max(0, decimals))
+  return Math.round(value * f) / f
+}
+
+export interface OrderLeg {
+  label: 'TP1' | 'TP2'
+  tp: number
+  qty: number
+  profit: number // USDT PnL if this leg's TP is hit
+}
+
+export interface OrderProjection {
+  side: 'LONG' | 'SHORT'
+  entry: number
+  stop: number
+  leverage: number
+  margin: number
+  qty: number
+  notional: number
+  legs: OrderLeg[]
+  profitTotal: number
+  profitRoiPct: number
+  lossPnl: number // negative number (PnL at stop)
+  lossRoiPct: number
+  liqPrice: number
+  rr: number
+  warnings: string[]
+}
+
+export interface ProjectInput {
+  side: 'LONG' | 'SHORT'
+  entry: number
+  stop: number
+  tp1: number
+  tp2: number
+  leverage: number
+  margin: number
+  tpMode: TpMode
+  /** Fraction (0..1) of qty closed at TP1 when tpMode === 'BOTH'. */
+  split: number
+  spec: SymbolSpec
+}
+
+function pnlAt(side: 'LONG' | 'SHORT', entry: number, price: number, qty: number): number {
+  return side === 'LONG' ? qty * (price - entry) : qty * (entry - price)
+}
+
+export function projectOrder(input: ProjectInput): OrderProjection {
+  const { side, entry, stop, tp1, tp2, leverage, margin, tpMode, split, spec } = input
+  const warnings: string[] = []
+
+  const qty = floorToPrecision((margin * leverage) / entry, spec.basePrecision)
+  const notional = qty * entry
+
+  const legs: OrderLeg[] = []
+  if (tpMode === 'TP1') {
+    legs.push({ label: 'TP1', tp: tp1, qty, profit: pnlAt(side, entry, tp1, qty) })
+  } else if (tpMode === 'TP2') {
+    legs.push({ label: 'TP2', tp: tp2, qty, profit: pnlAt(side, entry, tp2, qty) })
+  } else {
+    const qty1 = floorToPrecision(qty * split, spec.basePrecision)
+    const qty2 = floorToPrecision(qty - qty1, spec.basePrecision)
+    legs.push({ label: 'TP1', tp: tp1, qty: qty1, profit: pnlAt(side, entry, tp1, qty1) })
+    legs.push({ label: 'TP2', tp: tp2, qty: qty2, profit: pnlAt(side, entry, tp2, qty2) })
+    if (spec.minTradeVolume > 0 && (qty1 < spec.minTradeVolume || qty2 < spec.minTradeVolume)) {
+      warnings.push('A leg is below the minimum trade size — increase margin or use a single TP.')
+    }
+  }
+
+  const profitTotal = legs.reduce((a, l) => a + l.profit, 0)
+  const lossPnl = pnlAt(side, entry, stop, qty)
+
+  // Weighted-average TP for the R:R headline.
+  const totalLegQty = legs.reduce((a, l) => a + l.qty, 0) || qty
+  const blendedTp = legs.reduce((a, l) => a + l.tp * l.qty, 0) / totalLegQty
+  const rr = Math.abs(entry - stop) > 0 ? Math.abs(blendedTp - entry) / Math.abs(entry - stop) : 0
+
+  // Approximate isolated-margin liquidation price (excludes fees/funding/MMR).
+  const liqPrice = side === 'LONG' ? entry * (1 - 1 / leverage) : entry * (1 + 1 / leverage)
+
+  if (spec.minTradeVolume > 0 && qty < spec.minTradeVolume) {
+    warnings.push(
+      `Position size ${qty} is below the minimum (${spec.minTradeVolume}). Increase margin or leverage.`,
+    )
+  }
+  if (qty <= 0) warnings.push('Position size is zero — increase margin or leverage.')
+
+  return {
+    side,
+    entry,
+    stop,
+    leverage,
+    margin,
+    qty,
+    notional,
+    legs,
+    profitTotal,
+    profitRoiPct: margin > 0 ? (profitTotal / margin) * 100 : 0,
+    lossPnl,
+    lossRoiPct: margin > 0 ? (lossPnl / margin) * 100 : 0,
+    liqPrice,
+    rr,
+    warnings,
+  }
+}
