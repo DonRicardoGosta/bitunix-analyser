@@ -1,0 +1,61 @@
+@import 'tailwindcss';
+
+/* Dark-only terminal theme. */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #070a10;
+  color: #e5e7eb;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Numeric/monospace helper for tables and prices. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* Slim scrollbars. */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #1f2937;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}
+
+/* Reusable surface tokens via @utility (Tailwind v4). */
+@utility panel {
+  background-color: rgba(17, 24, 39, 0.6);
+  border: 1px solid rgba(55, 65, 81, 0.6);
+  border-radius: 0.75rem;
+}
+
+@utility panel-strong {
+  background-color: rgba(15, 21, 33, 0.92);
+  border: 1px solid rgba(55, 65, 81, 0.7);
+  border-radius: 0.75rem;
+}
