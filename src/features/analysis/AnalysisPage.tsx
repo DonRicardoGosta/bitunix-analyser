@@ -7,15 +7,17 @@ import type { KlineInterval } from '../../lib/bitunix/rest'
 import { SymbolPicker } from './SymbolPicker'
 import { FundingWidget } from './FundingWidget'
 import { ChartTab } from './tabs/ChartTab'
+import { SetupTab } from './tabs/SetupTab'
 import { LiquidityTab } from './tabs/LiquidityTab'
 import { DerivativesTab } from './tabs/DerivativesTab'
 import { FlowTab } from './tabs/FlowTab'
 import { ScreenerTab } from './tabs/ScreenerTab'
 
-type TabKey = 'chart' | 'liquidity' | 'derivatives' | 'flow' | 'screener'
+type TabKey = 'chart' | 'setup' | 'liquidity' | 'derivatives' | 'flow' | 'screener'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'chart', label: 'Chart' },
+  { key: 'setup', label: 'Setup' },
   { key: 'liquidity', label: 'Liquidity' },
   { key: 'derivatives', label: 'Derivatives' },
   { key: 'flow', label: 'Order Flow' },
@@ -97,6 +99,7 @@ export function AnalysisPage() {
       </div>
 
       {tab === 'chart' && <ChartTab />}
+      {tab === 'setup' && <SetupTab />}
       {tab === 'liquidity' && <LiquidityTab />}
       {tab === 'derivatives' && <DerivativesTab />}
       {tab === 'flow' && <FlowTab />}
