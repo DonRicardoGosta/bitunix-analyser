@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import type { TradePlan } from './engine'
 import {
@@ -65,15 +65,29 @@ export function OrderTicket({
   const [showConfirm, setShowConfirm] = useState(false)
   const [submit, setSubmit] = useState<SubmitState>({ kind: 'idle' })
 
-  // Seed editable prices from the plan whenever the side or symbol changes.
+  // Tracks which price fields the user has manually edited; edited fields stop
+  // auto-following the live setup until reset or a side change.
+  const editedRef = useRef({ entry: false, stop: false, tp1: false, tp2: false })
+
+  // Reset edits when the side or symbol changes.
   useEffect(() => {
-    setEntry(String(roundToPrecision(plan.entry, spec.quotePrecision)))
-    setStop(String(roundToPrecision(plan.stop, spec.quotePrecision)))
-    setTp1(String(roundToPrecision(plan.tp1, spec.quotePrecision)))
-    setTp2(String(roundToPrecision(plan.tp2, spec.quotePrecision)))
+    editedRef.current = { entry: false, stop: false, tp1: false, tp2: false }
     setSubmit({ kind: 'idle' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [side, symbol, spec.quotePrecision])
+  }, [side, symbol])
+
+  // Keep un-edited prices in sync with the continuously recomputed plan.
+  useEffect(() => {
+    const q = spec.quotePrecision
+    if (!editedRef.current.entry) setEntry(String(roundToPrecision(plan.entry, q)))
+    if (!editedRef.current.stop) setStop(String(roundToPrecision(plan.stop, q)))
+    if (!editedRef.current.tp1) setTp1(String(roundToPrecision(plan.tp1, q)))
+    if (!editedRef.current.tp2) setTp2(String(roundToPrecision(plan.tp2, q)))
+  }, [plan.entry, plan.stop, plan.tp1, plan.tp2, spec.quotePrecision])
+
+  const editPrice = (field: 'entry' | 'stop' | 'tp1' | 'tp2', setter: (v: string) => void) => (v: string) => {
+    editedRef.current[field] = true
+    setter(v)
+  }
 
   // Clamp leverage into the symbol's allowed range when specs load.
   useEffect(() => {
@@ -153,10 +167,12 @@ export function OrderTicket({
   }
 
   function resetPrices() {
-    setEntry(String(roundToPrecision(plan.entry, spec.quotePrecision)))
-    setStop(String(roundToPrecision(plan.stop, spec.quotePrecision)))
-    setTp1(String(roundToPrecision(plan.tp1, spec.quotePrecision)))
-    setTp2(String(roundToPrecision(plan.tp2, spec.quotePrecision)))
+    editedRef.current = { entry: false, stop: false, tp1: false, tp2: false }
+    const q = spec.quotePrecision
+    setEntry(String(roundToPrecision(plan.entry, q)))
+    setStop(String(roundToPrecision(plan.stop, q)))
+    setTp1(String(roundToPrecision(plan.tp1, q)))
+    setTp2(String(roundToPrecision(plan.tp2, q)))
   }
 
   return (
@@ -305,12 +321,12 @@ export function OrderTicket({
             <PriceInput
               label={orderType === 'MARKET' ? 'Entry (market)' : 'Entry'}
               value={orderType === 'MARKET' ? String(roundToPrecision(currentPrice, spec.quotePrecision)) : entry}
-              onChange={setEntry}
+              onChange={editPrice('entry', setEntry)}
               disabled={orderType === 'MARKET'}
             />
-            <PriceInput label="Stop loss" value={stop} onChange={setStop} tone="down" />
-            <PriceInput label="TP1" value={tp1} onChange={setTp1} tone="up" />
-            <PriceInput label="TP2" value={tp2} onChange={setTp2} tone="up" />
+            <PriceInput label="Stop loss" value={stop} onChange={editPrice('stop', setStop)} tone="down" />
+            <PriceInput label="TP1" value={tp1} onChange={editPrice('tp1', setTp1)} tone="up" />
+            <PriceInput label="TP2" value={tp2} onChange={editPrice('tp2', setTp2)} tone="up" />
           </div>
 
           {/* TP selector */}
