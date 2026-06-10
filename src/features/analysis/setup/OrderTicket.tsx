@@ -11,6 +11,7 @@ import { useCredentials } from '../../../store/credentials'
 import {
   changeLeverage,
   changeMarginMode,
+  changePositionMode,
   placeOrder,
 } from '../../../lib/bitunix/rest'
 import type { PlaceOrderParams } from '../../../lib/bitunix/types'
@@ -123,6 +124,17 @@ export function OrderTicket({
     setShowConfirm(false)
     const orderIds: string[] = []
     try {
+      // Multi-Trade requires Hedge position mode; enable it before opening.
+      // (The Multi-Trade toggle itself is manual-only in the Bitunix app.)
+      setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
+      let hedge = positionMode === 'HEDGE'
+      try {
+        await changePositionMode('HEDGE')
+        hedge = true
+      } catch {
+        // Can't switch while positions/orders exist — keep the known mode.
+      }
+
       setSubmit({ kind: 'submitting', step: 'Setting margin mode…' })
       try {
         await changeMarginMode(symbol, marginMode, marginCoin)
@@ -143,7 +155,7 @@ export function OrderTicket({
         slStopType: 'LAST_PRICE',
         slOrderType: 'MARKET',
       }
-      if (positionMode === 'HEDGE') base.tradeSide = 'OPEN'
+      if (hedge) base.tradeSide = 'OPEN'
       if (orderType === 'LIMIT') base.price = String(roundToPrecision(effectiveEntry, spec.quotePrecision))
 
       for (let i = 0; i < projection.legs.length; i++) {
@@ -422,6 +434,12 @@ export function OrderTicket({
             </p>
           )}
 
+          <p className="text-[11px] text-zinc-500">
+            Orders open in Hedge mode (set automatically). For multiple same-direction positions per
+            pair, enable <span className="text-zinc-300">Multi-Trade</span> once in the Bitunix app —
+            it isn't available through the API.
+          </p>
+
           <button
             onClick={() => setShowConfirm(true)}
             disabled={!canSubmit}
@@ -548,7 +566,7 @@ function ConfirmModal({
           Confirm {side} · {symbol}
         </h3>
         <p className="mt-1 text-xs text-amber-300/80">
-          This places a real {orderType.toLowerCase()} order on Bitunix futures ({marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x).
+          This places a real {orderType.toLowerCase()} order on Bitunix futures ({marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x, hedge mode).
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2 text-sm">

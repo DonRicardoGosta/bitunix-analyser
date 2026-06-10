@@ -233,6 +233,15 @@ export function changeMarginMode(
   return privatePost('/api/v1/futures/account/change_margin_mode', { symbol, marginMode, marginCoin })
 }
 
+/**
+ * Sets the account-wide position mode (ONE_WAY or HEDGE). Hedge mode is the
+ * prerequisite for Bitunix "Multi-Trade" and lets you hold long+short at once.
+ * Fails (and should be ignored) if positions/orders already exist.
+ */
+export function changePositionMode(positionMode: 'ONE_WAY' | 'HEDGE'): Promise<unknown> {
+  return privatePost('/api/v1/futures/account/change_position_mode', { positionMode })
+}
+
 export function getLeverageMarginMode(
   symbol: string,
   marginCoin = 'USDT',
