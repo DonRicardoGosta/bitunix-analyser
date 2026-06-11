@@ -7,7 +7,7 @@ import { useCredentials } from '../../store/credentials'
 import { flashClosePosition } from '../../lib/bitunix/rest'
 import { Badge, EmptyState } from '../../components/ui/primitives'
 import { fmtPrice, fmtSignedUsd, pnlColor, toNum } from '../../lib/format'
-import type { PositionTpsl } from './positions'
+import { positionOutcome, type PositionTpsl } from './positions'
 
 export function PositionsTable({
   positions,
@@ -58,7 +58,7 @@ export function PositionsTable({
             const mark = tickers[p.symbol]?.last ?? toNum(p.avgOpenPrice)
             const liq = toNum(p.liqPrice)
             const upnl = toNum(p.unrealizedPNL)
-            const t = tpslMap[p.positionId]
+            const o = positionOutcome(p, tpslMap[p.positionId], mark)
             const closing = closeMut.isPending && closeMut.variables === p.positionId
             return (
               <tr key={p.positionId} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
@@ -70,10 +70,10 @@ export function PositionsTable({
                 <td className="px-2 py-2 text-right tabular text-zinc-300">{fmtPrice(p.avgOpenPrice)}</td>
                 <td className="px-2 py-2 text-right tabular text-zinc-300">{fmtPrice(mark)}</td>
                 <td className="px-2 py-2 text-right tabular text-emerald-300/80">
-                  {t && Number.isFinite(t.tp) && t.tp > 0 ? fmtPrice(t.tp) : '—'}
+                  {o.tpPrice !== null ? fmtPrice(o.tpPrice) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular text-rose-300/80">
-                  {t && Number.isFinite(t.sl) && t.sl > 0 ? fmtPrice(t.sl) : '—'}
+                  {o.slPrice !== null ? fmtPrice(o.slPrice) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular text-amber-300/80">
                   {liq > 0 ? fmtPrice(liq) : '—'}

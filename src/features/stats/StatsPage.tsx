@@ -9,6 +9,7 @@ import {
   usePositionTpsl,
 } from './useStats'
 import { buildTpslMap, projectedBalances } from './positions'
+import { useTickers } from '../../store/tickers'
 import {
   bySide,
   bySymbol,
@@ -47,6 +48,7 @@ export function StatsPage() {
   const histPos = useHistoryPositions(days)
   const histTrades = useHistoryTrades(days)
 
+  const tickers = useTickers((s) => s.map)
   const tpslMap = useMemo(() => buildTpslMap(tpsl.data), [tpsl.data])
 
   const positions = useMemo(() => normalizePositions(histPos.data ?? []), [histPos.data])
@@ -83,7 +85,12 @@ export function StatsPage() {
   const unrealized = toNum(acct?.crossUnrealizedPNL) + toNum(acct?.isolationUnrealizedPNL)
   const wallet = available + margin + frozen
   const equity = wallet + unrealized
-  const proj = projectedBalances(pending.data ?? [], tpslMap, wallet)
+  const proj = projectedBalances(
+    pending.data ?? [],
+    tpslMap,
+    wallet,
+    (s) => tickers[s]?.last ?? 0,
+  )
 
   return (
     <div className="flex flex-col gap-5">
