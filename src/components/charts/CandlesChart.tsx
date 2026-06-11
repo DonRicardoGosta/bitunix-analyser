@@ -6,12 +6,15 @@ import {
   LineSeries,
   ColorType,
   CrosshairMode,
+  LineStyle,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type UTCTimestamp,
 } from 'lightweight-charts'
 import type { Candle } from '../../lib/candles'
 import { bollinger, ema, vwap } from '../../lib/indicators'
+import type { PriceLineDef } from './SetupChart'
 
 export interface OverlayToggles {
   ema9: boolean
@@ -24,6 +27,8 @@ export interface OverlayToggles {
 interface Props {
   candles: Candle[]
   overlays: OverlayToggles
+  /** Horizontal price lines (e.g. open-position entry/TP/SL). */
+  priceLines?: PriceLineDef[]
   height?: number
 }
 
@@ -34,12 +39,13 @@ interface LineDef {
   values: (number | null)[]
 }
 
-export function CandlesChart({ candles, overlays, height = 460 }: Props) {
+export function CandlesChart({ candles, overlays, priceLines = [], height = 460 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const lineRefs = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
+  const priceLinesRef = useRef<IPriceLine[]>([])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -84,8 +90,30 @@ export function CandlesChart({ candles, overlays, height = 460 }: Props) {
       candleRef.current = null
       volumeRef.current = null
       lineSeriesMap.clear()
+      priceLinesRef.current = []
     }
   }, [])
+
+  // Reconcile horizontal price lines (open-position entry/TP/SL).
+  useEffect(() => {
+    const series = candleRef.current
+    if (!series) return
+    for (const pl of priceLinesRef.current) series.removePriceLine(pl)
+    priceLinesRef.current = []
+    for (const def of priceLines) {
+      if (!Number.isFinite(def.price) || def.price <= 0) continue
+      priceLinesRef.current.push(
+        series.createPriceLine({
+          price: def.price,
+          color: def.color,
+          lineWidth: def.width ?? 1,
+          lineStyle: def.dashed ? LineStyle.Dashed : LineStyle.Solid,
+          axisLabelVisible: true,
+          title: def.title,
+        }),
+      )
+    }
+  }, [priceLines])
 
   // Update candle + volume data.
   useEffect(() => {
