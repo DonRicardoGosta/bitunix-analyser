@@ -1,7 +1,14 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useCredentials } from '../../store/credentials'
-import { useAccount, useHistoryPositions, useHistoryTrades, usePendingPositions } from './useStats'
+import {
+  useAccount,
+  useHistoryPositions,
+  useHistoryTrades,
+  usePendingPositions,
+  usePositionTpsl,
+} from './useStats'
+import { buildTpslMap, projectedBalances } from './positions'
 import {
   bySide,
   bySymbol,
@@ -36,8 +43,11 @@ export function StatsPage() {
 
   const account = useAccount()
   const pending = usePendingPositions()
+  const tpsl = usePositionTpsl()
   const histPos = useHistoryPositions(days)
   const histTrades = useHistoryTrades(days)
+
+  const tpslMap = useMemo(() => buildTpslMap(tpsl.data), [tpsl.data])
 
   const positions = useMemo(() => normalizePositions(histPos.data ?? []), [histPos.data])
   const stats = useMemo(() => computePositionStats(positions), [positions])
@@ -73,6 +83,7 @@ export function StatsPage() {
   const unrealized = toNum(acct?.crossUnrealizedPNL) + toNum(acct?.isolationUnrealizedPNL)
   const wallet = available + margin + frozen
   const equity = wallet + unrealized
+  const proj = projectedBalances(pending.data ?? [], tpslMap, wallet)
 
   return (
     <div className="flex flex-col gap-5">
@@ -100,9 +111,21 @@ export function StatsPage() {
       </div>
 
       {/* Account cards */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
         <StatCard label="Equity" value={fmtUsd(equity)} sub={`Wallet ${fmtUsd(wallet)}`} />
         <StatCard label="Available" value={fmtUsd(available)} />
+        <StatCard
+          label="If all TP hit"
+          value={fmtUsd(proj.ifTp)}
+          sub={fmtSignedUsd(proj.tpDelta)}
+          tone="up"
+        />
+        <StatCard
+          label="If all SL hit"
+          value={fmtUsd(proj.ifSl)}
+          sub={fmtSignedUsd(proj.slDelta)}
+          tone="down"
+        />
         <StatCard label="Used Margin" value={fmtUsd(margin)} sub={`Frozen ${fmtUsd(frozen)}`} />
         <StatCard
           label="Unrealized PnL"
@@ -119,7 +142,11 @@ export function StatsPage() {
         title="Open positions"
         actions={pending.isFetching ? <Spinner /> : undefined}
       >
-        {pending.isLoading ? <Spinner /> : <PositionsTable positions={pending.data ?? []} />}
+        {pending.isLoading ? (
+          <Spinner />
+        ) : (
+          <PositionsTable positions={pending.data ?? []} tpslMap={tpslMap} />
+        )}
       </Panel>
 
       {/* Performance summary */}
