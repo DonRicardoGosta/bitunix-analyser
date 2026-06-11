@@ -11,6 +11,7 @@ import {
 } from './useStats'
 import { buildTpslMap, projectedBalances } from './positions'
 import { useTickers } from '../../store/tickers'
+import { useUiPrefs } from '../../store/uiPrefs'
 import {
   bySide,
   bySymbol,
@@ -30,7 +31,17 @@ import {
 import { EChart } from '../../components/charts/EChart'
 import { Panel, StatCard, Spinner, ErrorNote, EmptyState } from '../../components/ui/primitives'
 import { PositionsTable } from './PositionsTable'
-import { fmtUsd, fmtSignedUsd, fmtPct, fmtCompact, fmtDuration, toNum, pnlColor } from '../../lib/format'
+import {
+  fmtUsd,
+  fmtSignedUsd,
+  fmtPct,
+  fmtCompact,
+  fmtDuration,
+  toNum,
+  pnlColor,
+  toDatetimeLocal,
+  fromDatetimeLocal,
+} from '../../lib/format'
 
 const HOUR = 3_600_000
 const DAY = 86_400_000
@@ -46,24 +57,14 @@ const PRESETS = [
   { label: '180D', ms: 180 * DAY },
 ]
 
-/** ms -> "YYYY-MM-DDTHH:mm" in local time for <input type="datetime-local">. */
-function toLocalInput(ms: number): string {
-  const off = new Date(ms).getTimezoneOffset() * 60000
-  return new Date(ms - off).toISOString().slice(0, 16)
-}
-
-function fromLocalInput(s: string): number {
-  const t = new Date(s).getTime()
-  return Number.isFinite(t) ? t : Date.now()
-}
-
 export function StatsPage() {
   const hasKeys = useCredentials((s) => s.hasKeys())
-  const [mode, setMode] = useState<'preset' | 'custom'>('preset')
-  const [lookbackMs, setLookbackMs] = useState(30 * DAY)
-  const [fromInput, setFromInput] = useState(() => toLocalInput(Date.now() - 7 * DAY))
-  const [toInput, setToInput] = useState(() => toLocalInput(Date.now()))
-  const [toNow, setToNow] = useState(true)
+  const mode = useUiPrefs((s) => s.statsMode)
+  const lookbackMs = useUiPrefs((s) => s.statsLookbackMs)
+  const fromInput = useUiPrefs((s) => s.statsFrom)
+  const toInput = useUiPrefs((s) => s.statsTo)
+  const toNow = useUiPrefs((s) => s.statsToNow)
+  const setStats = useUiPrefs((s) => s.setStats)
 
   // Debounce the custom inputs so editing dates doesn't spam the history API.
   const [committedFrom, setCommittedFrom] = useState(fromInput)
@@ -78,13 +79,13 @@ export function StatsPage() {
 
   const range: RangeParams =
     mode === 'custom'
-      ? { from: fromLocalInput(committedFrom), to: toNow ? undefined : fromLocalInput(committedTo) }
+      ? { from: fromDatetimeLocal(committedFrom), to: toNow ? undefined : fromDatetimeLocal(committedTo) }
       : { lookbackMs }
 
   const rangeLabel =
     mode === 'custom'
-      ? `${new Date(fromLocalInput(committedFrom)).toLocaleString()} → ${
-          toNow ? 'now' : new Date(fromLocalInput(committedTo)).toLocaleString()
+      ? `${new Date(fromDatetimeLocal(committedFrom)).toLocaleString()} → ${
+          toNow ? 'now' : new Date(fromDatetimeLocal(committedTo)).toLocaleString()
         }`
       : `last ${PRESETS.find((p) => p.ms === lookbackMs)?.label ?? ''}`
 
@@ -155,10 +156,7 @@ export function StatsPage() {
               return (
                 <button
                   key={p.label}
-                  onClick={() => {
-                    setMode('preset')
-                    setLookbackMs(p.ms)
-                  }}
+                  onClick={() => setStats({ statsMode: 'preset', statsLookbackMs: p.ms })}
                   className={
                     'rounded-md px-2.5 py-1 text-xs font-medium ' +
                     (active ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200')
@@ -169,7 +167,7 @@ export function StatsPage() {
               )
             })}
             <button
-              onClick={() => setMode('custom')}
+              onClick={() => setStats({ statsMode: 'custom' })}
               className={
                 'rounded-md px-2.5 py-1 text-xs font-medium ' +
                 (mode === 'custom' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200')
@@ -186,7 +184,7 @@ export function StatsPage() {
                 <input
                   type="datetime-local"
                   value={fromInput}
-                  onChange={(e) => setFromInput(e.target.value)}
+                  onChange={(e) => setStats({ statsFrom: e.target.value })}
                   className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 outline-none focus:border-cyan-500"
                 />
               </label>
@@ -194,9 +192,9 @@ export function StatsPage() {
                 To
                 <input
                   type="datetime-local"
-                  value={toNow ? toLocalInput(Date.now()) : toInput}
+                  value={toNow ? toDatetimeLocal(Date.now()) : toInput}
                   disabled={toNow}
-                  onChange={(e) => setToInput(e.target.value)}
+                  onChange={(e) => setStats({ statsTo: e.target.value })}
                   className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 outline-none focus:border-cyan-500 disabled:opacity-50"
                 />
               </label>
@@ -204,7 +202,7 @@ export function StatsPage() {
                 <input
                   type="checkbox"
                   checked={toNow}
-                  onChange={(e) => setToNow(e.target.checked)}
+                  onChange={(e) => setStats({ statsToNow: e.target.checked })}
                   className="accent-cyan-500"
                 />
                 Now (real-time)

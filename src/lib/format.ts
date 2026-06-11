@@ -79,6 +79,17 @@ export function fmtClock(ts: number | string | undefined): string {
   return new Date(n).toLocaleTimeString()
 }
 
+/** ms -> "YYYY-MM-DDTHH:mm" in local time for <input type="datetime-local">. */
+export function toDatetimeLocal(ms: number): string {
+  const off = new Date(ms).getTimezoneOffset() * 60000
+  return new Date(ms - off).toISOString().slice(0, 16)
+}
+
+export function fromDatetimeLocal(s: string): number {
+  const t = new Date(s).getTime()
+  return Number.isFinite(t) ? t : Date.now()
+}
+
 export function fmtDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
   const s = Math.floor(ms / 1000)

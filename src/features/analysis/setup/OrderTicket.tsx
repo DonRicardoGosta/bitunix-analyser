@@ -8,6 +8,7 @@ import {
 } from './order'
 import { useSymbolSpecs } from '../useSymbolSpecs'
 import { useCredentials } from '../../../store/credentials'
+import { useUiPrefs } from '../../../store/uiPrefs'
 import {
   changeLeverage,
   changeMarginMode,
@@ -53,12 +54,21 @@ export function OrderTicket({
   const hasKeys = useCredentials((s) => s.hasKeys())
   const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
 
-  const [leverage, setLeverage] = useState(spec.defaultLeverage)
-  const [margin, setMargin] = useState('100')
-  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('MARKET')
-  const [marginMode, setMarginMode] = useState<'CROSS' | 'ISOLATION'>('CROSS')
-  const [tpMode, setTpMode] = useState<TpMode>('TP1')
-  const [split, setSplit] = useState(0.5)
+  // Persisted ticket settings (remembered across navigation/reloads).
+  const leverage = useUiPrefs((s) => s.ticketLeverage)
+  const margin = useUiPrefs((s) => s.ticketMargin)
+  const orderType = useUiPrefs((s) => s.ticketOrderType)
+  const marginMode = useUiPrefs((s) => s.ticketMarginMode)
+  const tpMode = useUiPrefs((s) => s.ticketTpMode)
+  const split = useUiPrefs((s) => s.ticketSplit)
+  const setTicket = useUiPrefs((s) => s.setTicket)
+  const setLeverage = (v: number) => setTicket({ ticketLeverage: v })
+  const setMargin = (v: string) => setTicket({ ticketMargin: v })
+  const setOrderType = (v: 'LIMIT' | 'MARKET') => setTicket({ ticketOrderType: v })
+  const setMarginMode = (v: 'CROSS' | 'ISOLATION') => setTicket({ ticketMarginMode: v })
+  const setTpMode = (v: TpMode) => setTicket({ ticketTpMode: v })
+  const setSplit = (v: number) => setTicket({ ticketSplit: v })
+
   const [entry, setEntry] = useState('')
   const [stop, setStop] = useState('')
   const [tp1, setTp1] = useState('')
@@ -92,8 +102,9 @@ export function OrderTicket({
 
   // Clamp leverage into the symbol's allowed range when specs load.
   useEffect(() => {
-    setLeverage((lev) => Math.min(spec.maxLeverage, Math.max(spec.minLeverage, lev || spec.defaultLeverage)))
-  }, [spec.minLeverage, spec.maxLeverage, spec.defaultLeverage])
+    const clamped = Math.min(spec.maxLeverage, Math.max(spec.minLeverage, leverage || spec.defaultLeverage))
+    if (clamped !== leverage) setTicket({ ticketLeverage: clamped })
+  }, [spec.minLeverage, spec.maxLeverage, spec.defaultLeverage, leverage, setTicket])
 
   const effectiveEntry = orderType === 'MARKET' ? currentPrice : toNum(entry, currentPrice)
 
