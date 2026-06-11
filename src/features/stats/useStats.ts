@@ -4,6 +4,7 @@ import {
   getHistoryPositions,
   getHistoryTrades,
   getPendingPositions,
+  getTpslPending,
 } from '../../lib/bitunix/rest'
 import { useCredentials } from '../../store/credentials'
 import type { HistoryPositionRaw, HistoryTradeRaw } from '../../lib/bitunix/types'
@@ -56,6 +57,16 @@ export function usePendingPositions() {
   return useQuery({
     queryKey: ['pendingPositions'],
     queryFn: () => getPendingPositions(),
+    enabled: hasKeys,
+    refetchInterval: 10_000,
+  })
+}
+
+export function usePositionTpsl() {
+  const hasKeys = useCredentials((s) => s.hasKeys())
+  return useQuery({
+    queryKey: ['positionTpsl'],
+    queryFn: () => getTpslPending(),
     enabled: hasKeys,
     refetchInterval: 10_000,
   })

@@ -20,6 +20,7 @@ import type {
   PendingPositionRaw,
   PlaceOrderParams,
   TickerRaw,
+  TpslOrderRaw,
   TradingPairRaw,
 } from './types'
 
@@ -250,6 +251,19 @@ export function getLeverageMarginMode(
     symbol,
     marginCoin,
   })
+}
+
+/** Pending TP/SL trigger orders attached to open positions. */
+export function getTpslPending(symbol?: string): Promise<TpslOrderRaw[]> {
+  return privateGet<TpslOrderRaw[]>(
+    '/api/v1/futures/tpsl/get_pending_orders',
+    symbol ? { symbol } : undefined,
+  )
+}
+
+/** Close an open position at market by its position id. */
+export function flashClosePosition(positionId: string): Promise<{ positionId: string }> {
+  return privatePost('/api/v1/futures/trade/flash_close_position', { positionId })
 }
 
 /** Lightweight connection test used by the Settings page. */

@@ -102,6 +102,22 @@ export interface LeverageMarginMode {
   marginMode: MarginMode
 }
 
+export interface TpslOrderRaw {
+  id: string
+  positionId: string
+  symbol: string
+  tpPrice?: string
+  tpStopType?: string
+  slPrice?: string
+  slStopType?: string
+  tpOrderType?: string
+  tpOrderPrice?: string
+  slOrderType?: string
+  slOrderPrice?: string
+  tpQty?: string
+  slQty?: string
+}
+
 export interface AccountRaw {
   marginCoin: string
   available: string
