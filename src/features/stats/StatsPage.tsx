@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useCredentials } from '../../store/credentials'
 import {
@@ -7,6 +7,7 @@ import {
   useHistoryTrades,
   usePendingPositions,
   usePositionTpsl,
+  type RangeParams,
 } from './useStats'
 import { buildTpslMap, projectedBalances } from './positions'
 import { useTickers } from '../../store/tickers'
@@ -31,22 +32,67 @@ import { Panel, StatCard, Spinner, ErrorNote, EmptyState } from '../../component
 import { PositionsTable } from './PositionsTable'
 import { fmtUsd, fmtSignedUsd, fmtPct, fmtCompact, fmtDuration, toNum, pnlColor } from '../../lib/format'
 
-const WINDOWS = [
-  { label: '7D', days: 7 },
-  { label: '30D', days: 30 },
-  { label: '90D', days: 90 },
-  { label: '180D', days: 180 },
+const HOUR = 3_600_000
+const DAY = 86_400_000
+
+const PRESETS = [
+  { label: '1H', ms: HOUR },
+  { label: '4H', ms: 4 * HOUR },
+  { label: '12H', ms: 12 * HOUR },
+  { label: '24H', ms: 24 * HOUR },
+  { label: '7D', ms: 7 * DAY },
+  { label: '30D', ms: 30 * DAY },
+  { label: '90D', ms: 90 * DAY },
+  { label: '180D', ms: 180 * DAY },
 ]
+
+/** ms -> "YYYY-MM-DDTHH:mm" in local time for <input type="datetime-local">. */
+function toLocalInput(ms: number): string {
+  const off = new Date(ms).getTimezoneOffset() * 60000
+  return new Date(ms - off).toISOString().slice(0, 16)
+}
+
+function fromLocalInput(s: string): number {
+  const t = new Date(s).getTime()
+  return Number.isFinite(t) ? t : Date.now()
+}
 
 export function StatsPage() {
   const hasKeys = useCredentials((s) => s.hasKeys())
-  const [days, setDays] = useState(30)
+  const [mode, setMode] = useState<'preset' | 'custom'>('preset')
+  const [lookbackMs, setLookbackMs] = useState(30 * DAY)
+  const [fromInput, setFromInput] = useState(() => toLocalInput(Date.now() - 7 * DAY))
+  const [toInput, setToInput] = useState(() => toLocalInput(Date.now()))
+  const [toNow, setToNow] = useState(true)
+
+  // Debounce the custom inputs so editing dates doesn't spam the history API.
+  const [committedFrom, setCommittedFrom] = useState(fromInput)
+  const [committedTo, setCommittedTo] = useState(toInput)
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setCommittedFrom(fromInput)
+      setCommittedTo(toInput)
+    }, 500)
+    return () => clearTimeout(id)
+  }, [fromInput, toInput])
+
+  const range: RangeParams =
+    mode === 'custom'
+      ? { from: fromLocalInput(committedFrom), to: toNow ? undefined : fromLocalInput(committedTo) }
+      : { lookbackMs }
+
+  const rangeLabel =
+    mode === 'custom'
+      ? `${new Date(fromLocalInput(committedFrom)).toLocaleString()} → ${
+          toNow ? 'now' : new Date(fromLocalInput(committedTo)).toLocaleString()
+        }`
+      : `last ${PRESETS.find((p) => p.ms === lookbackMs)?.label ?? ''}`
 
   const account = useAccount()
   const pending = usePendingPositions()
   const tpsl = usePositionTpsl()
-  const histPos = useHistoryPositions(days)
-  const histTrades = useHistoryTrades(days)
+  const histPos = useHistoryPositions(range)
+  const histTrades = useHistoryTrades(range)
 
   const tickers = useTickers((s) => s.map)
   const tpslMap = useMemo(() => buildTpslMap(tpsl.data), [tpsl.data])
@@ -98,22 +144,73 @@ export function StatsPage() {
         <div>
           <h1 className="text-xl font-semibold text-zinc-100">Account Statistics</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
-            {acct?.marginCoin ?? 'USDT'}-margined futures · last {days} days
+            {acct?.marginCoin ?? 'USDT'}-margined futures · {rangeLabel}
           </p>
         </div>
-        <div className="flex items-center gap-1 rounded-lg border border-zinc-800 p-1">
-          {WINDOWS.map((w) => (
+
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-zinc-800 p-1">
+            {PRESETS.map((p) => {
+              const active = mode === 'preset' && lookbackMs === p.ms
+              return (
+                <button
+                  key={p.label}
+                  onClick={() => {
+                    setMode('preset')
+                    setLookbackMs(p.ms)
+                  }}
+                  className={
+                    'rounded-md px-2.5 py-1 text-xs font-medium ' +
+                    (active ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200')
+                  }
+                >
+                  {p.label}
+                </button>
+              )
+            })}
             <button
-              key={w.days}
-              onClick={() => setDays(w.days)}
+              onClick={() => setMode('custom')}
               className={
-                'rounded-md px-3 py-1 text-xs font-medium ' +
-                (days === w.days ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200')
+                'rounded-md px-2.5 py-1 text-xs font-medium ' +
+                (mode === 'custom' ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200')
               }
             >
-              {w.label}
+              Custom
             </button>
-          ))}
+          </div>
+
+          {mode === 'custom' && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-800 p-2 text-xs">
+              <label className="flex items-center gap-1.5 text-zinc-400">
+                From
+                <input
+                  type="datetime-local"
+                  value={fromInput}
+                  onChange={(e) => setFromInput(e.target.value)}
+                  className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 outline-none focus:border-cyan-500"
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-zinc-400">
+                To
+                <input
+                  type="datetime-local"
+                  value={toNow ? toLocalInput(Date.now()) : toInput}
+                  disabled={toNow}
+                  onChange={(e) => setToInput(e.target.value)}
+                  className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 outline-none focus:border-cyan-500 disabled:opacity-50"
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={toNow}
+                  onChange={(e) => setToNow(e.target.checked)}
+                  className="accent-cyan-500"
+                />
+                Now (real-time)
+              </label>
+            </div>
+          )}
         </div>
       </div>
 

@@ -72,30 +72,45 @@ export function usePositionTpsl() {
   })
 }
 
-export function useHistoryPositions(days: number) {
+/** A time window: either a rolling lookback, or an explicit from/to (to omitted = now). */
+export interface RangeParams {
+  lookbackMs?: number
+  from?: number
+  to?: number
+}
+
+function resolveRange(r: RangeParams): { start: number; end: number } {
+  const end = r.to ?? Date.now()
+  const start = r.from ?? end - (r.lookbackMs ?? 30 * 86_400_000)
+  return { start, end }
+}
+
+export function useHistoryPositions(range: RangeParams) {
   const hasKeys = useCredentials((s) => s.hasKeys())
+  const live = range.to === undefined
   return useQuery({
-    queryKey: ['historyPositions', days],
+    queryKey: ['historyPositions', range.lookbackMs ?? null, range.from ?? null, range.to ?? null],
     queryFn: () => {
-      const end = Date.now()
-      const start = end - days * 86_400_000
+      const { start, end } = resolveRange(range)
       return fetchAllPositions(start, end)
     },
     enabled: hasKeys,
     staleTime: 60_000,
+    refetchInterval: live ? 60_000 : false,
   })
 }
 
-export function useHistoryTrades(days: number) {
+export function useHistoryTrades(range: RangeParams) {
   const hasKeys = useCredentials((s) => s.hasKeys())
+  const live = range.to === undefined
   return useQuery({
-    queryKey: ['historyTrades', days],
+    queryKey: ['historyTrades', range.lookbackMs ?? null, range.from ?? null, range.to ?? null],
     queryFn: () => {
-      const end = Date.now()
-      const start = end - days * 86_400_000
+      const { start, end } = resolveRange(range)
       return fetchAllTrades(start, end)
     },
     enabled: hasKeys,
     staleTime: 60_000,
+    refetchInterval: live ? 60_000 : false,
   })
 }
