@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { toDatetimeLocal } from '../lib/format'
+import type { KlineInterval } from '../lib/bitunix/rest'
 
 const DAY = 86_400_000
 
@@ -15,6 +16,8 @@ interface StatsRange {
   statsFrom: string
   statsTo: string
   statsToNow: boolean
+  /** Timeframe used to review open positions for reversals. */
+  statsReviewInterval: KlineInterval
 }
 
 interface TicketPrefs {
@@ -40,6 +43,7 @@ export const useUiPrefs = create<UiPrefsState>()(
       statsFrom: toDatetimeLocal(Date.now() - 7 * DAY),
       statsTo: toDatetimeLocal(Date.now()),
       statsToNow: true,
+      statsReviewInterval: '1h',
       setStats: (p) => set((s) => ({ ...s, ...p })),
 
       // Order ticket defaults

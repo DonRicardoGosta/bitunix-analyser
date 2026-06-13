@@ -7,8 +7,9 @@ import { useCandles } from '../useCandles'
 import { useOrderBook } from '../useOrderBook'
 import { useOpenInterest, useLongShort, useTakerFlow } from '../useDerivatives'
 import { useAccount } from '../../stats/useStats'
-import { toBinancePeriod } from '../../../lib/bitunix/intervals'
-import { getFundingRate } from '../../../lib/bitunix/rest'
+import { toBinancePeriod, higherTimeframe } from '../../../lib/bitunix/intervals'
+import { getFundingRate, getKline } from '../../../lib/bitunix/rest'
+import { parseKlines } from '../../../lib/candles'
 import { buildSetup, type SetupResult, type TradePlan } from '../setup/engine'
 import { OrderTicket } from '../setup/OrderTicket'
 import { SetupChart, type PriceLineDef } from '../../../components/charts/SetupChart'
@@ -27,6 +28,14 @@ export function SetupTab() {
   const oi = useOpenInterest(symbol, period)
   const ls = useLongShort(symbol, period)
   const taker = useTakerFlow(symbol, period)
+  const htfInterval = higherTimeframe(interval)
+  const htf = useQuery({
+    queryKey: ['htf-candles', symbol, htfInterval, priceType],
+    queryFn: async () => parseKlines(await getKline({ symbol, interval: htfInterval, limit: 200, type: priceType })),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    retry: 0,
+  })
   const funding = useQuery({
     queryKey: ['funding', symbol],
     queryFn: () => getFundingRate(symbol),
@@ -49,6 +58,7 @@ export function SetupTab() {
     return buildSetup({
       candles,
       book,
+      htfCandles: htf.data,
       derivatives: {
         oi: oi.data,
         longShort: ls.data?.global,
@@ -56,7 +66,7 @@ export function SetupTab() {
         fundingRate: funding.data ? toNum(funding.data.fundingRate) : undefined,
       },
     })
-  }, [candles, book, oi.data, ls.data, taker.data, funding.data])
+  }, [candles, book, htf.data, oi.data, ls.data, taker.data, funding.data])
 
   // Follow the bias-preferred side until the user explicitly picks one.
   const preferred: 'LONG' | 'SHORT' = setup ? (setup.bias >= 0 ? 'LONG' : 'SHORT') : 'LONG'
@@ -115,7 +125,7 @@ export function SetupTab() {
         <p className="text-xs text-zinc-500">Loading order-book liquidity…</p>
       ) : null}
 
-      <BiasMeter setup={setup} />
+      <BiasMeter setup={setup} htfInterval={htfInterval} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <PlanCard
@@ -183,6 +193,8 @@ export function SetupTab() {
         <SetupChart candles={candles} lines={lines} height={460} />
       </Panel>
 
+      <SignalQuality setup={setup} interval={interval} />
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel title="Key levels" subtitle="Confluence of liquidity, volume profile, swings & indicators">
           <LevelsTable setup={setup} />
@@ -195,10 +207,51 @@ export function SetupTab() {
   )
 }
 
-function BiasMeter({ setup }: { setup: SetupResult }) {
+function SignalQuality({ setup, interval }: { setup: SetupResult; interval: string }) {
+  const bt = setup.backtest
+  return (
+    <Panel
+      title="Signal quality (backtest)"
+      subtitle={`Candle-only replay of the bias on recent ${interval} history — order-book & derivatives factors are not replayable`}
+    >
+      {!bt ? (
+        <EmptyState title="Not enough history to validate" hint="Load more candles or pick a busier timeframe." />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Metric label="Win rate" value={`${(bt.winRate * 100).toFixed(0)}%`} tone={bt.winRate >= 0.5 ? 'up' : 'down'} />
+            <Metric
+              label="Expectancy"
+              value={`${bt.expectancy >= 0 ? '+' : ''}${bt.expectancy.toFixed(2)}R`}
+              tone={bt.expectancy >= 0 ? 'up' : 'down'}
+            />
+            <Metric
+              label="Profit factor"
+              value={Number.isFinite(bt.profitFactor) ? bt.profitFactor.toFixed(2) : '∞'}
+              tone={bt.profitFactor >= 1 ? 'up' : 'down'}
+            />
+            <Metric label="Signals" value={`${bt.samples}`} />
+          </div>
+          <p className="text-[11px] text-zinc-500">
+            {bt.wins}W / {bt.losses}L over {bt.lookbackBars} bars · {bt.longSamples} long / {bt.shortSamples} short ·
+            fixed-RR exits.
+            {bt.samples < 8 ? ' Small sample — treat with caution.' : ''}
+          </p>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function BiasMeter({ setup, htfInterval }: { setup: SetupResult; htfInterval: string }) {
   const pct = ((setup.bias + 1) / 2) * 100
   const tone =
     setup.biasLabel === 'LONG' ? 'text-emerald-400' : setup.biasLabel === 'SHORT' ? 'text-rose-400' : 'text-zinc-300'
+  const htf = setup.htfTrend
+  const htfLabel = htf === null ? 'n/a' : htf > 0.1 ? 'Up' : htf < -0.1 ? 'Down' : 'Flat'
+  const htfTone: 'up' | 'down' | 'neutral' = htf === null ? 'neutral' : htf > 0.1 ? 'up' : htf < -0.1 ? 'down' : 'neutral'
+  const regimeTone: 'accent' | 'warn' | 'neutral' =
+    setup.regime.type === 'TREND' ? 'accent' : setup.regime.type === 'RANGE' ? 'warn' : 'neutral'
   return (
     <Panel>
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -222,6 +275,17 @@ function BiasMeter({ setup }: { setup: SetupResult }) {
             <span>Bullish</span>
           </div>
         </div>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-zinc-800/60 pt-3">
+        <Badge tone={regimeTone}>
+          Regime: {setup.regime.type} · ER {(setup.regime.er * 100).toFixed(0)}% · chop {setup.regime.chop.toFixed(0)}
+        </Badge>
+        <Badge tone={htfTone}>
+          HTF trend ({htfInterval}): {htfLabel}
+        </Badge>
+        {htf !== null && setup.biasLabel !== 'NEUTRAL' && Math.sign(htf) !== (setup.biasLabel === 'LONG' ? 1 : -1) ? (
+          <Badge tone="warn">Bias fights HTF trend</Badge>
+        ) : null}
       </div>
     </Panel>
   )
@@ -253,12 +317,17 @@ function PlanCard({
       )}
     >
       <header className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge tone={isLong ? 'up' : 'down'}>{plan.side}</Badge>
           {preferred && <Badge tone="accent">Preferred · bias {biasLabel}</Badge>}
-          {!plan.valid && <Badge tone="warn">Weak</Badge>}
+          {plan.counterTrend && <Badge tone="down">Counter-trend</Badge>}
+          {!plan.valid && !plan.counterTrend && <Badge tone="warn">Weak</Badge>}
         </div>
         <div className="flex items-center gap-3">
+          <div className="text-right">
+            <div className="text-[11px] uppercase tracking-wide text-zinc-500">Quality</div>
+            <div className="tabular text-sm font-semibold text-zinc-100">{plan.quality.toFixed(0)}</div>
+          </div>
           <div className="text-right">
             <div className="text-[11px] uppercase tracking-wide text-zinc-500">Confidence</div>
             <div className="tabular text-sm font-semibold text-zinc-100">{plan.confidence.toFixed(0)}%</div>

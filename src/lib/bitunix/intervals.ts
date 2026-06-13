@@ -62,6 +62,32 @@ export function intervalSeconds(interval: KlineInterval): number {
   return SECONDS[interval]
 }
 
+/**
+ * Higher timeframe used for trend confirmation. Roughly 4-8x the base interval
+ * so the bias respects the dominant trend rather than intrabar noise.
+ */
+const HIGHER_TF: Record<KlineInterval, KlineInterval> = {
+  '1m': '15m',
+  '3m': '30m',
+  '5m': '1h',
+  '15m': '4h',
+  '30m': '4h',
+  '1h': '4h',
+  '2h': '1d',
+  '4h': '1d',
+  '6h': '1d',
+  '8h': '1d',
+  '12h': '1w',
+  '1d': '1w',
+  '3d': '1w',
+  '1w': '1w',
+  '1M': '1M',
+}
+
+export function higherTimeframe(interval: KlineInterval): KlineInterval {
+  return HIGHER_TF[interval] ?? interval
+}
+
 /** Binance period that best matches a Bitunix interval (for OI / long-short). */
 export function toBinancePeriod(interval: KlineInterval): '5m' | '15m' | '30m' | '1h' | '4h' | '1d' {
   switch (interval) {

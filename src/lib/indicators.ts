@@ -3,6 +3,42 @@ import type { Candle } from './candles'
 // Technical indicators computed client-side from candle data.
 // All array-returning functions are aligned with the input (null during warmup).
 
+function clampNum(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v))
+}
+
+/**
+ * Kaufman efficiency ratio over the last `lookback` closes (0..1). Pass `end`
+ * to evaluate the window ending at a specific index (used by the backtester).
+ */
+export function efficiencyRatio(values: number[], lookback = 30, end = values.length - 1): number {
+  if (end < 1) return 0
+  const start = Math.max(0, end - lookback)
+  const net = Math.abs(values[end] - values[start])
+  let path = 0
+  for (let i = start + 1; i <= end; i++) path += Math.abs(values[i] - values[i - 1])
+  return path > 0 ? net / path : 0
+}
+
+/** Choppiness index over `period` (~0 trending, ~100 ranging). */
+export function choppinessIndex(candles: Candle[], period = 14, end = candles.length - 1): number {
+  if (end < period) return 50
+  let trSum = 0
+  let hh = -Infinity
+  let ll = Infinity
+  for (let i = end - period + 1; i <= end; i++) {
+    const h = candles[i].high
+    const l = candles[i].low
+    const pc = candles[i - 1].close
+    trSum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc))
+    if (h > hh) hh = h
+    if (l < ll) ll = l
+  }
+  const range = hh - ll
+  if (range <= 0 || trSum <= 0) return 100
+  return clampNum((100 * Math.log10(trSum / range)) / Math.log10(period), 0, 100)
+}
+
 export function sma(values: number[], period: number): (number | null)[] {
   const out: (number | null)[] = new Array(values.length).fill(null)
   let sum = 0

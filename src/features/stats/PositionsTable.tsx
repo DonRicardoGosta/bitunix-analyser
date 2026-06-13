@@ -8,13 +8,16 @@ import { flashClosePosition } from '../../lib/bitunix/rest'
 import { Badge, EmptyState } from '../../components/ui/primitives'
 import { fmtPrice, fmtSignedUsd, pnlColor, toNum } from '../../lib/format'
 import { positionOutcome, type PositionTpsl } from './positions'
+import type { PositionReview } from './review'
 
 export function PositionsTable({
   positions,
   tpslMap,
+  reviews,
 }: {
   positions: PendingPositionRaw[]
   tpslMap: Record<string, PositionTpsl>
+  reviews?: Record<string, PositionReview>
 }) {
   const tickers = useTickers((s) => s.map)
   const hasKeys = useCredentials((s) => s.hasKeys())
@@ -42,6 +45,7 @@ export function PositionsTable({
           <tr className="border-b border-zinc-800 text-left text-[11px] uppercase tracking-wide text-zinc-500">
             <th className="px-2 py-2">Symbol</th>
             <th className="px-2 py-2">Side</th>
+            <th className="px-2 py-2">Signal</th>
             <th className="px-2 py-2 text-right">Size</th>
             <th className="px-2 py-2 text-right">Entry</th>
             <th className="px-2 py-2 text-right">Mark</th>
@@ -59,12 +63,22 @@ export function PositionsTable({
             const liq = toNum(p.liqPrice)
             const upnl = toNum(p.unrealizedPNL)
             const o = positionOutcome(p, tpslMap[p.positionId], mark)
+            const review = reviews?.[p.positionId]
             const closing = closeMut.isPending && closeMut.variables === p.positionId
             return (
               <tr key={p.positionId} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
                 <td className="px-2 py-2 font-medium text-zinc-100">{p.symbol}</td>
                 <td className="px-2 py-2">
                   <Badge tone={p.side === 'LONG' ? 'up' : 'down'}>{p.side}</Badge>
+                </td>
+                <td className="px-2 py-2">
+                  {review && review.verdict !== 'unknown' ? (
+                    <span title={review.reasons.join(' · ')} className="cursor-default">
+                      <Badge tone={review.tone}>{review.label}</Badge>
+                    </span>
+                  ) : (
+                    <span className="text-zinc-600">—</span>
+                  )}
                 </td>
                 <td className="px-2 py-2 text-right tabular text-zinc-300">{fmtPrice(p.qty)}</td>
                 <td className="px-2 py-2 text-right tabular text-zinc-300">{fmtPrice(p.avgOpenPrice)}</td>

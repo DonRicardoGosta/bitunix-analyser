@@ -5,7 +5,7 @@ import { useRecommended, type RecommendedItem } from '../recommend/useRecommende
 import { Panel, Spinner, EmptyState, ErrorNote, Badge } from '../../../components/ui/primitives'
 import { fmtPrice, fmtPct, fmtCompact, pnlColor } from '../../../lib/format'
 
-const POSITIVE_REASONS = new Set(['Clean trend', 'Trending', 'Healthy volatility', 'Liquid'])
+const POSITIVE_REASONS = new Set(['Clean trend', 'Trending', 'Healthy volatility', 'Liquid', 'Clear bias'])
 
 export function RecommendedTab({ onAnalyze }: { onAnalyze: (symbol: string) => void }) {
   const interval = useMarket((s) => s.interval)

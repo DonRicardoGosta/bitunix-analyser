@@ -1,5 +1,5 @@
 import type { Candle } from '../../../lib/candles'
-import { atr as atrIndic, bollinger, ema, macd, rsi, vwap } from '../../../lib/indicators'
+import { bollinger, ema, vwap } from '../../../lib/indicators'
 import { binLiquidity, imbalance, type ParsedBook } from '../orderbook'
 import { volumeProfile } from '../volumeProfile'
 import type {
@@ -7,6 +7,21 @@ import type {
   OpenInterestPoint,
   TakerVolumePoint,
 } from '../../../lib/binance/types'
+import {
+  buildCtx,
+  candleFactors,
+  detectRegime,
+  neutralBand,
+  trendValue,
+  type CandleCtx,
+  type FactorScore,
+  type Regime,
+} from './signal'
+import { backtestSignal, type BacktestStats } from './backtest'
+import { BACKTEST, HTF, MAX_TOTAL_WEIGHT, PLAN, WEIGHTS } from './config'
+
+export type { FactorScore, Regime } from './signal'
+export type { BacktestStats } from './backtest'
 
 // ---- Public types ----
 
@@ -30,14 +45,6 @@ export interface KeyLevel {
   sources: LevelSource[]
 }
 
-export interface FactorScore {
-  label: string
-  value: number // -1 (bearish) .. +1 (bullish)
-  weight: number
-  available: boolean
-  detail: string
-}
-
 export interface TradePlan {
   side: 'LONG' | 'SHORT'
   valid: boolean
@@ -49,6 +56,8 @@ export interface TradePlan {
   tp2: number
   rr: number
   confidence: number // 0..100
+  quality: number // 0..100 — combined setup quality (rr + alignment + confluence + regime)
+  counterTrend: boolean // fights the higher-timeframe trend
   reasons: string[]
   note?: string
 }
@@ -59,10 +68,13 @@ export interface SetupResult {
   bias: number // -1..+1
   biasLabel: 'LONG' | 'SHORT' | 'NEUTRAL'
   biasConfidence: number // 0..100
+  regime: Regime
+  htfTrend: number | null // -1..+1 higher-timeframe trend, null when unavailable
   factors: FactorScore[]
   levels: KeyLevel[]
   long: TradePlan
   short: TradePlan
+  backtest: BacktestStats | null
   hasLiquidity: boolean
   hasDerivatives: boolean
 }
@@ -78,6 +90,8 @@ export interface SetupInput {
   candles: Candle[]
   book: ParsedBook | null
   derivatives?: DerivativesSnapshot
+  /** Higher-timeframe candles for trend confirmation (optional). */
+  htfCandles?: Candle[]
 }
 
 // ---- Helpers ----
@@ -210,77 +224,28 @@ function buildLevels(candles: Candle[], book: ParsedBook | null, price: number):
 // ---- Factor scoring ----
 
 function scoreFactors(
-  candles: Candle[],
+  ctx: CandleCtx,
   book: ParsedBook | null,
   derivatives: DerivativesSnapshot | undefined,
-  price: number,
+  regime: Regime,
+  htfValue: number | null,
 ): FactorScore[] {
-  const closes = candles.map((c) => c.close)
-  const factors: FactorScore[] = []
+  const candles = ctx.candles
+  const i = candles.length - 1
+  const price = ctx.closes[i]
 
-  // Trend: EMA9 vs EMA50 + price vs EMA50.
-  const ema9 = lastDefined(ema(closes, 9))
-  const ema50 = lastDefined(ema(closes, 50))
-  if (ema9 && ema50) {
-    const cross = clamp((ema9 - ema50) / ema50 / 0.01, -1, 1)
-    const pos = clamp((price - ema50) / ema50 / 0.02, -1, 1)
-    const value = clamp((cross + pos) / 2, -1, 1)
-    factors.push({
-      label: 'Trend (EMA)',
-      value,
-      weight: 0.22,
-      available: true,
-      detail: `EMA9 ${ema9 > ema50 ? '>' : '<'} EMA50, price ${price > ema50 ? 'above' : 'below'} EMA50`,
-    })
-  }
+  // Candle-derived factors (shared with the backtester / scanner).
+  const factors: FactorScore[] = candleFactors(ctx, i, htfValue, regime)
 
-  // VWAP.
-  const vw = lastDefined(vwap(candles))
-  if (vw) {
-    const value = clamp((price - vw) / vw / 0.01, -1, 1)
-    factors.push({
-      label: 'VWAP',
-      value,
-      weight: 0.1,
-      available: true,
-      detail: `Price ${price > vw ? 'above' : 'below'} VWAP`,
-    })
-  }
-
-  // RSI.
-  const r = lastDefined(rsi(closes, 14))
-  if (r !== null) {
-    const value = clamp((r - 50) / 50, -1, 1)
-    factors.push({
-      label: 'RSI (14)',
-      value,
-      weight: 0.13,
-      available: true,
-      detail: `RSI ${r.toFixed(0)}`,
-    })
-  }
-
-  // MACD histogram.
-  const m = macd(closes)
-  const hist = lastDefined(m.hist)
-  if (hist !== null) {
-    const value = clamp(hist / (price * 0.0015), -1, 1)
-    factors.push({
-      label: 'MACD',
-      value,
-      weight: 0.1,
-      available: true,
-      detail: `Histogram ${hist >= 0 ? 'positive' : 'negative'}`,
-    })
-  }
-
-  // Order-book imbalance.
+  // Order-book imbalance — de-weighted and gated by spread quality, since the
+  // snapshot is noisy and easily spoofed.
   if (book) {
     const imb = imbalance(book, 1)
+    const quality = clamp(1 - book.spreadPct / 0.1, 0.3, 1)
     factors.push({
       label: 'Order-book imbalance',
       value: clamp(imb.skew, -1, 1),
-      weight: 0.15,
+      weight: WEIGHTS.orderBook * quality,
       available: true,
       detail: `${imb.skew >= 0 ? 'Bid' : 'Ask'}-heavy (${(imb.skew * 100).toFixed(0)}%)`,
     })
@@ -295,7 +260,7 @@ function scoreFactors(
       factors.push({
         label: 'Taker flow',
         value,
-        weight: 0.12,
+        weight: WEIGHTS.taker,
         available: true,
         detail: `Buy/sell ${ratio.toFixed(2)}`,
       })
@@ -327,7 +292,7 @@ function scoreFactors(
       value = -0.2
       detail = 'OI falling on drop (long unwinding)'
     }
-    factors.push({ label: 'Open interest', value, weight: 0.1, available: true, detail })
+    factors.push({ label: 'Open interest', value, weight: WEIGHTS.openInterest, available: true, detail })
   }
 
   // Positioning: funding + crowd long/short (contrarian).
@@ -354,7 +319,7 @@ function scoreFactors(
       factors.push({
         label: 'Positioning (contrarian)',
         value: clamp(acc / n, -1, 1),
-        weight: 0.08,
+        weight: WEIGHTS.positioning,
         available: true,
         detail: detailParts.join(', '),
       })
@@ -364,7 +329,11 @@ function scoreFactors(
   return factors
 }
 
-function aggregateBias(factors: FactorScore[]): { bias: number; confidence: number } {
+function aggregateBias(
+  factors: FactorScore[],
+  regime: Regime,
+  htfValue: number | null,
+): { bias: number; confidence: number } {
   const avail = factors.filter((f) => f.available)
   const wsum = avail.reduce((a, f) => a + f.weight, 0)
   if (wsum === 0) return { bias: 0, confidence: 0 }
@@ -373,7 +342,21 @@ function aggregateBias(factors: FactorScore[]): { bias: number; confidence: numb
   const dir = Math.sign(bias)
   const agreeW = avail.filter((f) => Math.sign(f.value) === dir && dir !== 0).reduce((a, f) => a + f.weight, 0)
   const agreement = dir === 0 ? 0 : agreeW / wsum
-  const confidence = clamp(Math.abs(bias) * 70 + agreement * 30, 0, 97)
+
+  // How much of the intended signal weight we actually have. Candle-only reads
+  // (no order book / derivatives) are penalized but not killed.
+  const coverage = clamp(wsum / MAX_TOTAL_WEIGHT, 0, 1)
+  const coverageFactor = 0.6 + 0.4 * coverage
+  // Choppy regimes get a lower ceiling than clean trends.
+  const regimeFactor = 0.65 + 0.35 * regime.trendStrength
+  // Fighting the higher-timeframe trend caps confidence.
+  let htfFactor = 1
+  if (htfValue !== null && dir !== 0 && Math.sign(htfValue) !== dir) {
+    htfFactor = clamp(1 - Math.abs(htfValue) * HTF.conflictPenalty, 1 - HTF.conflictPenalty, 1)
+  }
+
+  const raw = Math.abs(bias) * 70 + agreement * 30
+  const confidence = clamp(raw * regimeFactor * coverageFactor * htfFactor, 0, 97)
   return { bias, confidence }
 }
 
@@ -385,9 +368,16 @@ function buildPlan(
   levels: KeyLevel[],
   atr: number,
   bias: number,
+  regime: Regime,
+  htfValue: number | null,
   topReasons: string[],
 ): TradePlan {
   const isLong = side === 'LONG'
+  // A plan that fights the higher-timeframe trend is flagged and never "valid".
+  const counterTrend =
+    htfValue !== null &&
+    ((isLong && htfValue < -HTF.conflictThreshold) || (!isLong && htfValue > HTF.conflictThreshold))
+
   // Entry candidates: supports below price for LONG, resistances above for SHORT.
   const entrySide = isLong ? 'support' : 'resistance'
   const targetSide = isLong ? 'resistance' : 'support'
@@ -401,7 +391,7 @@ function buildPlan(
     .sort((a, b) => (isLong ? a.price - b.price : b.price - a.price))
 
   const atrPct = price > 0 ? atr / price : 0.01
-  const maxDist = Math.max(0.03, atrPct * 3.5) // how far the entry may sit from price
+  const maxDist = Math.max(PLAN.maxEntryDistPct, atrPct * PLAN.maxEntryDistAtrMult)
 
   // Pick the entry level: prefer strong + nearby.
   let best: KeyLevel | null = null
@@ -416,40 +406,43 @@ function buildPlan(
   }
 
   const reasons: string[] = []
-  let note: string | undefined
 
   if (!best) {
     // No structural level on that side: fall back to an ATR-based pullback entry.
-    const entry = isLong ? price - atr * 1.2 : price + atr * 1.2
-    const stop = isLong ? entry - atr * 1.3 : entry + atr * 1.3
+    const entry = isLong ? price - atr * PLAN.fallbackEntryAtr : price + atr * PLAN.fallbackEntryAtr
+    const stop = isLong ? entry - atr * PLAN.fallbackStopAtr : entry + atr * PLAN.fallbackStopAtr
     const risk = Math.abs(entry - stop)
-    const tp1 = isLong ? entry + risk * 1.8 : entry - risk * 1.8
-    const tp2 = isLong ? entry + risk * 3 : entry - risk * 3
-    note = 'No clean structural level nearby — ATR-based pullback entry.'
+    const tp1 = isLong ? entry + risk * PLAN.fallbackTp1R : entry - risk * PLAN.fallbackTp1R
+    const tp2 = isLong ? entry + risk * PLAN.fallbackTp2R : entry - risk * PLAN.fallbackTp2R
+    const alignment = isLong ? bias : -bias
     return {
       side,
       valid: false,
       entry,
-      entryLow: Math.min(entry, isLong ? entry - atr * 0.25 : entry),
-      entryHigh: Math.max(entry, isLong ? entry : entry + atr * 0.25),
+      entryLow: Math.min(entry, isLong ? entry - atr * PLAN.entryBufferAtr : entry),
+      entryHigh: Math.max(entry, isLong ? entry : entry + atr * PLAN.entryBufferAtr),
       stop,
       tp1,
       tp2,
       rr: risk > 0 ? Math.abs(tp1 - entry) / risk : 0,
-      confidence: clamp(30 + (isLong ? bias : -bias) * 25, 5, 70),
+      confidence: clamp(30 + alignment * 25, 5, 70),
+      quality: clamp(20 + alignment * 20 + regime.trendStrength * 10 - (counterTrend ? 15 : 0), 0, 60),
+      counterTrend,
       reasons: [...topReasons],
-      note,
+      note: counterTrend
+        ? 'Against the higher-timeframe trend — counter-trend, no clean level nearby.'
+        : 'No clean structural level nearby — ATR-based pullback entry.',
     }
   }
 
   const entry = best.price
   const entryDist = Math.abs(price - entry) / price
-  const buffer = Math.max(atr * 0.25, entry * 0.001)
+  const buffer = Math.max(atr * PLAN.entryBufferAtr, entry * PLAN.entryBufferPct)
   const entryLow = entry - buffer
   const entryHigh = entry + buffer
 
   // Stop beyond the entry level.
-  const stopBuffer = Math.max(atr * 1.0, entry * 0.004)
+  const stopBuffer = Math.max(atr * PLAN.stopBufferAtr, entry * PLAN.stopBufferPct)
   const stop = isLong ? entry - stopBuffer : entry + stopBuffer
   const risk = Math.abs(entry - stop)
 
@@ -460,8 +453,8 @@ function buildPlan(
   const nearObstacle = targets.find((t) => Math.abs(t.price - entry) < minReward)
   const tp1Level = farTargets[0]
   const tp2Level = farTargets[1]
-  const tp1 = tp1Level?.price ?? (isLong ? entry + risk * 1.8 : entry - risk * 1.8)
-  const tp2 = tp2Level?.price ?? (isLong ? entry + risk * 3 : entry - risk * 3)
+  const tp1 = tp1Level?.price ?? (isLong ? entry + risk * PLAN.fallbackTp1R : entry - risk * PLAN.fallbackTp1R)
+  const tp2 = tp2Level?.price ?? (isLong ? entry + risk * PLAN.fallbackTp2R : entry - risk * PLAN.fallbackTp2R)
   const rr = risk > 0 ? Math.abs(tp1 - entry) / risk : 0
 
   reasons.push(`Entry at ${best.sources.join(' + ')}`)
@@ -474,15 +467,29 @@ function buildPlan(
   reasons.push(...topReasons)
 
   const alignment = isLong ? bias : -bias
+  const farEntry = entryDist > maxDist
   const confidence = clamp(
-    40 + alignment * 28 + best.strength * 18 + (clamp(rr, 0, 3) / 3) * 12,
+    40 + alignment * 28 + best.strength * 18 + (clamp(rr, 0, 3) / 3) * 12 - (counterTrend ? 20 : 0),
     5,
     96,
   )
+  const quality = clamp(
+    35 +
+      alignment * 22 +
+      best.strength * 15 +
+      (clamp(rr, 0, 3) / 3) * 15 +
+      regime.trendStrength * 13 -
+      (counterTrend ? 22 : 0) -
+      (farEntry ? 10 : 0),
+    0,
+    100,
+  )
+
+  const valid = rr >= PLAN.targetRR && !farEntry && !counterTrend
 
   return {
     side,
-    valid: rr >= 1,
+    valid,
     entry,
     entryLow,
     entryHigh,
@@ -491,11 +498,14 @@ function buildPlan(
     tp2,
     rr,
     confidence,
+    quality,
+    counterTrend,
     reasons,
-    note:
-      rr < 1
-        ? 'Risk/reward below 1 — weak setup at current levels.'
-        : entryDist > maxDist
+    note: counterTrend
+      ? 'Against the higher-timeframe trend — high risk, treat as counter-trend.'
+      : rr < PLAN.targetRR
+        ? `Risk/reward ${rr.toFixed(2)} below target ${PLAN.targetRR} — weak setup here.`
+        : farEntry
           ? 'Entry sits far from price — wait for a pullback into the zone.'
           : undefined,
   }
@@ -503,15 +513,30 @@ function buildPlan(
 
 // ---- Entry point ----
 
+/** Higher-timeframe trend (-1..+1) from a separate candle series, or null. */
+function htfTrend(htfCandles: Candle[] | undefined): number | null {
+  if (!htfCandles || htfCandles.length < 50) return null
+  const closes = htfCandles.map((c) => c.close)
+  const fast = lastDefined(ema(closes, 9))
+  const slow = lastDefined(ema(closes, 50))
+  const price = closes[closes.length - 1]
+  return trendValue(fast, slow, price)
+}
+
 export function buildSetup(input: SetupInput): SetupResult | null {
-  const { candles, book, derivatives } = input
+  const { candles, book, derivatives, htfCandles } = input
   if (!candles || candles.length < 30) return null
   const price = candles[candles.length - 1].close
-  const atr = lastDefined(atrIndic(candles, 14)) ?? price * 0.01
+  const ctx = buildCtx(candles)
+  const atr = lastDefined(ctx.atr) ?? price * 0.01
 
-  const factors = scoreFactors(candles, book, derivatives, price)
-  const { bias, confidence } = aggregateBias(factors)
-  const biasLabel: SetupResult['biasLabel'] = bias > 0.12 ? 'LONG' : bias < -0.12 ? 'SHORT' : 'NEUTRAL'
+  const regime = detectRegime(candles)
+  const htfValue = htfTrend(htfCandles)
+
+  const factors = scoreFactors(ctx, book, derivatives, regime, htfValue)
+  const { bias, confidence } = aggregateBias(factors, regime, htfValue)
+  const band = neutralBand(regime)
+  const biasLabel: SetupResult['biasLabel'] = bias > band ? 'LONG' : bias < -band ? 'SHORT' : 'NEUTRAL'
 
   const levels = buildLevels(candles, book, price)
 
@@ -520,19 +545,32 @@ export function buildSetup(input: SetupInput): SetupResult | null {
   const bullReasons = sortedFactors.filter((f) => f.value > 0.1).slice(0, 3).map((f) => `${f.label}: ${f.detail}`)
   const bearReasons = sortedFactors.filter((f) => f.value < -0.1).slice(0, 3).map((f) => `${f.label}: ${f.detail}`)
 
-  const long = buildPlan('LONG', price, levels, atr, bias, bullReasons)
-  const short = buildPlan('SHORT', price, levels, atr, bias, bearReasons)
+  const long = buildPlan('LONG', price, levels, atr, bias, regime, htfValue, bullReasons)
+  const short = buildPlan('SHORT', price, levels, atr, bias, regime, htfValue, bearReasons)
+
+  // Historical validation of the candle-derived signal.
+  const backtest = backtestSignal(candles)
+
+  // Nudge confidence by the measured expectancy when we have enough samples.
+  let biasConfidence = confidence
+  if (backtest && backtest.samples >= BACKTEST.minSamples) {
+    const factor = clamp(1 + clamp(backtest.expectancy, -0.5, 0.5) * 0.4, 0.7, 1.2)
+    biasConfidence = clamp(confidence * factor, 0, 97)
+  }
 
   return {
     price,
     atr,
     bias,
     biasLabel,
-    biasConfidence: confidence,
+    biasConfidence,
+    regime,
+    htfTrend: htfValue,
     factors,
     levels,
     long,
     short,
+    backtest,
     hasLiquidity: Boolean(book),
     hasDerivatives: Boolean(derivatives && (derivatives.oi?.length || derivatives.taker?.length || derivatives.longShort?.length)),
   }

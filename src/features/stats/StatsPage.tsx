@@ -10,8 +10,12 @@ import {
   type RangeParams,
 } from './useStats'
 import { buildTpslMap, projectedBalances } from './positions'
+import { usePositionReviews } from './usePositionReviews'
+import { reviewPosition, type PositionReview } from './review'
 import { useTickers } from '../../store/tickers'
 import { useUiPrefs } from '../../store/uiPrefs'
+import { INTERVALS } from '../../lib/bitunix/intervals'
+import type { KlineInterval } from '../../lib/bitunix/rest'
 import {
   bySide,
   bySymbol,
@@ -64,6 +68,7 @@ export function StatsPage() {
   const fromInput = useUiPrefs((s) => s.statsFrom)
   const toInput = useUiPrefs((s) => s.statsTo)
   const toNow = useUiPrefs((s) => s.statsToNow)
+  const reviewInterval = useUiPrefs((s) => s.statsReviewInterval)
   const setStats = useUiPrefs((s) => s.setStats)
 
   // Debounce the custom inputs so editing dates doesn't spam the history API.
@@ -97,6 +102,17 @@ export function StatsPage() {
 
   const tickers = useTickers((s) => s.map)
   const tpslMap = useMemo(() => buildTpslMap(tpsl.data), [tpsl.data])
+
+  const reviewSignals = usePositionReviews(pending.data ?? [], reviewInterval)
+  const reviewByPositionId = useMemo(() => {
+    const out: Record<string, PositionReview> = {}
+    for (const p of pending.data ?? []) {
+      const mark = tickers[p.symbol]?.last ?? toNum(p.avgOpenPrice)
+      out[p.positionId] = reviewPosition(p, mark, reviewSignals.data?.[p.symbol])
+    }
+    return out
+  }, [pending.data, tickers, reviewSignals.data])
+  const toClose = (pending.data ?? []).filter((p) => reviewByPositionId[p.positionId]?.verdict === 'close')
 
   const positions = useMemo(() => normalizePositions(histPos.data ?? []), [histPos.data])
   const stats = useMemo(() => computePositionStats(positions), [positions])
@@ -242,12 +258,46 @@ export function StatsPage() {
       {/* Open positions */}
       <Panel
         title="Open positions"
-        actions={pending.isFetching ? <Spinner /> : undefined}
+        actions={
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+              Review TF
+              <select
+                value={reviewInterval}
+                onChange={(e) => setStats({ statsReviewInterval: e.target.value as KlineInterval })}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-cyan-500"
+              >
+                {INTERVALS.map((iv) => (
+                  <option key={iv} value={iv}>
+                    {iv}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {pending.isFetching || reviewSignals.isFetching ? <Spinner /> : null}
+          </div>
+        }
       >
+        {toClose.length > 0 && (
+          <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-3">
+            <div className="text-sm font-semibold text-rose-300">
+              {toClose.length} position{toClose.length > 1 ? 's' : ''} may be worth closing — market turned against{' '}
+              {toClose.length > 1 ? 'them' : 'it'} on the {reviewInterval} timeframe
+            </div>
+            <ul className="mt-1.5 space-y-0.5 text-xs text-rose-200/80">
+              {toClose.map((p) => (
+                <li key={p.positionId}>
+                  <span className="font-medium text-rose-100">{p.symbol}</span> {p.side} —{' '}
+                  {reviewByPositionId[p.positionId]?.reasons[0]}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {pending.isLoading ? (
           <Spinner />
         ) : (
-          <PositionsTable positions={pending.data ?? []} tpslMap={tpslMap} />
+          <PositionsTable positions={pending.data ?? []} tpslMap={tpslMap} reviews={reviewByPositionId} />
         )}
       </Panel>
 
