@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import type { TradePlan, RangeStraddlePlan, RangeStraddleLeg } from './engine'
+import type { TradePlan, RangeStraddlePlan, RangeStraddleLeg, BacktestStats } from './engine'
+import { evaluateEntry, type EntryQuality } from './entryQuality'
 import {
   projectOrder,
   roundToPrecision,
@@ -32,6 +33,9 @@ interface Props {
   tradeMode: TradeMode
   onTradeModeChange: (m: TradeMode) => void
   currentPrice: number
+  bias: number
+  biasLabel: 'LONG' | 'SHORT' | 'NEUTRAL'
+  backtest: BacktestStats | null
   positionMode?: string
   availableBalance?: number
 }
@@ -52,6 +56,8 @@ export function OrderTicket({
   tradeMode,
   onTradeModeChange,
   currentPrice,
+  biasLabel,
+  backtest,
   positionMode,
   availableBalance,
 }: Props) {
@@ -135,6 +141,13 @@ export function OrderTicket({
         availableBalance,
       }),
     [side, effectiveEntry, stop, tp1, tp2, leverage, margin, tpMode, split, spec, marginMode, availableBalance],
+  )
+
+  // Live entry-quality read for the single-direction trade: is *now* a good
+  // point to enter at the effective fill price? Advisory only.
+  const entryQuality = useMemo(
+    () => evaluateEntry({ side, plan, effectiveEntry, biasLabel, backtest }),
+    [side, plan, effectiveEntry, biasLabel, backtest],
   )
 
   // Straddle (both directions) projection: one MARKET leg per side, each sized
@@ -638,6 +651,8 @@ export function OrderTicket({
             {!both && " once in the Bitunix app — it isn't available through the API."}
           </p>
 
+          {!both && <EntryQualityCard quality={entryQuality} side={side} />}
+
           {both ? (
             <button
               onClick={() => setShowConfirm(true)}
@@ -658,11 +673,19 @@ export function OrderTicket({
               onClick={() => setShowConfirm(true)}
               disabled={!canSubmit}
               className={clsx(
-                'rounded-lg px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40',
-                side === 'LONG' ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400' : 'bg-rose-500 text-zinc-950 hover:bg-rose-400',
+                'rounded-lg px-4 py-2.5 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40',
+                entryQuality.verdict === 'poor'
+                  ? 'bg-amber-500 hover:bg-amber-400'
+                  : side === 'LONG'
+                    ? 'bg-emerald-500 hover:bg-emerald-400'
+                    : 'bg-rose-500 hover:bg-rose-400',
               )}
             >
-              {submit.kind === 'submitting' ? submit.step : `Open ${side} on ${symbol}`}
+              {submit.kind === 'submitting'
+                ? submit.step
+                : entryQuality.verdict === 'poor'
+                  ? `Open ${side} anyway on ${symbol}`
+                  : `Open ${side} on ${symbol}`}
             </button>
           )}
 
@@ -690,6 +713,7 @@ export function OrderTicket({
           margin={toNum(margin)}
           marginCoin={marginCoin}
           projection={projection}
+          entryQuality={entryQuality}
           onCancel={() => setShowConfirm(false)}
           onConfirm={doSubmit}
         />
@@ -764,6 +788,39 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'up
   )
 }
 
+const ENTRY_TONES = {
+  good: { box: 'border-emerald-500/40 bg-emerald-500/5', dot: 'bg-emerald-400', text: 'text-emerald-300', label: 'Good entry' },
+  caution: { box: 'border-amber-500/40 bg-amber-500/5', dot: 'bg-amber-400', text: 'text-amber-300', label: 'Caution' },
+  poor: { box: 'border-rose-500/40 bg-rose-500/5', dot: 'bg-rose-400', text: 'text-rose-300', label: 'Poor entry' },
+} as const
+
+function EntryQualityCard({ quality, side }: { quality: EntryQuality; side: 'LONG' | 'SHORT' }) {
+  const tone = ENTRY_TONES[quality.verdict]
+  return (
+    <div className={clsx('rounded-lg border p-3', tone.box)}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className={clsx('h-2 w-2 rounded-full', tone.dot)} />
+          <span className={clsx('text-xs font-semibold', tone.text)}>Entry quality: {tone.label}</span>
+        </div>
+        <span className="text-[11px] text-zinc-500">
+          {side} · score {quality.score.toFixed(0)}/100
+        </span>
+      </div>
+      {quality.reasons.length > 0 && (
+        <ul className="mt-2 space-y-0.5 text-[11px] text-zinc-400">
+          {quality.reasons.map((r, i) => (
+            <li key={i} className="flex gap-1.5">
+              <span className="text-zinc-600">•</span>
+              {r}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function ConfirmModal({
   symbol,
   side,
@@ -773,6 +830,7 @@ function ConfirmModal({
   margin,
   marginCoin,
   projection,
+  entryQuality,
   onCancel,
   onConfirm,
 }: {
@@ -784,9 +842,12 @@ function ConfirmModal({
   margin: number
   marginCoin: string
   projection: ReturnType<typeof projectOrder>
+  entryQuality: EntryQuality
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const poor = entryQuality.verdict === 'poor'
+  const flagged = entryQuality.verdict !== 'good'
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
       <div
@@ -799,6 +860,27 @@ function ConfirmModal({
         <p className="mt-1 text-xs text-amber-300/80">
           This places a real {orderType.toLowerCase()} order on Bitunix futures ({marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x, hedge mode).
         </p>
+
+        {flagged && (
+          <div
+            className={clsx(
+              'mt-3 rounded-md border px-3 py-2 text-xs',
+              poor ? 'border-rose-500/40 bg-rose-500/10 text-rose-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200',
+            )}
+          >
+            <div className="font-semibold">
+              {poor ? 'This is not a good entry — are you sure?' : 'Entry could be better — double-check before opening.'}
+            </div>
+            <ul className="mt-1 space-y-0.5">
+              {entryQuality.reasons.map((r, i) => (
+                <li key={i} className="flex gap-1.5">
+                  <span className="opacity-60">•</span>
+                  {r}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
           <Row label="Side" value={side} />
@@ -842,10 +924,14 @@ function ConfirmModal({
             onClick={onConfirm}
             className={clsx(
               'rounded-lg px-4 py-2 text-sm font-semibold text-zinc-950',
-              side === 'LONG' ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-rose-500 hover:bg-rose-400',
+              poor
+                ? 'bg-amber-500 hover:bg-amber-400'
+                : side === 'LONG'
+                  ? 'bg-emerald-500 hover:bg-emerald-400'
+                  : 'bg-rose-500 hover:bg-rose-400',
             )}
           >
-            Confirm {side}
+            {poor ? `Open ${side} anyway` : `Confirm ${side}`}
           </button>
         </div>
       </div>

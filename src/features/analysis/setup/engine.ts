@@ -20,12 +20,23 @@ import {
 import { backtestSignal, type BacktestStats } from './backtest'
 import { backtestRangeReversal } from './rangeBacktest'
 import { buildRangeStraddle, type RangeStraddlePlan } from './straddle'
+import { detectPatterns, type DetectedPattern } from './patterns'
+import { computeReversalRiskBySide, type ReversalRiskBySide, type MarketContext } from './reversalRisk'
 import { BACKTEST, HTF, MAX_TOTAL_WEIGHT, PLAN, WEIGHTS } from './config'
 
 export type { FactorScore, Regime } from './signal'
 export type { BacktestStats } from './backtest'
 export type { RangeBacktestStats } from './rangeBacktest'
 export type { RangeStraddlePlan, RangeStraddleLeg } from './straddle'
+export type { DetectedPattern, PatternId, PatternDirection } from './patterns'
+export type {
+  ReversalRisk,
+  ReversalRiskBySide,
+  ReversalDirection,
+  ReversalComponent,
+  ReversalLevel,
+  MarketContext,
+} from './reversalRisk'
 
 // ---- Public types ----
 
@@ -81,6 +92,10 @@ export interface SetupResult {
   /** Both-directions range straddle at strong levels (check `.valid` before use). */
   straddle: RangeStraddlePlan
   backtest: BacktestStats | null
+  /** Entry-signalling candlestick / price-action patterns completing near now. */
+  patterns: DetectedPattern[]
+  /** Reversal-fuel / squeeze-danger estimate per side (how much "ammo" exists to flip the market against a LONG / SHORT). */
+  reversalRisk: ReversalRiskBySide
   hasLiquidity: boolean
   hasDerivatives: boolean
 }
@@ -98,6 +113,8 @@ export interface SetupInput {
   derivatives?: DerivativesSnapshot
   /** Higher-timeframe candles for trend confirmation (optional). */
   htfCandles?: Candle[]
+  /** Broader market context (e.g. BTC volatility) for the reversal-risk model. */
+  marketContext?: MarketContext
 }
 
 // ---- Helpers ----
@@ -546,6 +563,25 @@ export function buildSetup(input: SetupInput): SetupResult | null {
 
   const levels = buildLevels(candles, book, price)
 
+  // Entry-signalling patterns (candlestick + price action) completing near now.
+  const patterns = detectPatterns(candles, { atr, levels, regime })
+
+  // Reversal-fuel / squeeze danger per side: how big the crowded position pile is
+  // and how close / fragile the level that would ignite a reversal against a
+  // LONG (downside flush) or a SHORT (upside squeeze).
+  const reversalRisk = computeReversalRiskBySide({
+    price,
+    atr,
+    regime,
+    candles,
+    levels,
+    book,
+    oi: derivatives?.oi,
+    longShort: derivatives?.longShort,
+    funding: derivatives?.fundingRate,
+    marketContext: input.marketContext,
+  })
+
   // Top contributing reasons (by absolute contribution), for plan annotations.
   const sortedFactors = [...factors].sort((a, b) => Math.abs(b.value * b.weight) - Math.abs(a.value * a.weight))
   const bullReasons = sortedFactors.filter((f) => f.value > 0.1).slice(0, 3).map((f) => `${f.label}: ${f.detail}`)
@@ -582,6 +618,8 @@ export function buildSetup(input: SetupInput): SetupResult | null {
     short,
     straddle,
     backtest,
+    patterns,
+    reversalRisk,
     hasLiquidity: Boolean(book),
     hasDerivatives: Boolean(derivatives && (derivatives.oi?.length || derivatives.taker?.length || derivatives.longShort?.length)),
   }

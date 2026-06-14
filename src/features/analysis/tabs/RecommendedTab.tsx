@@ -123,6 +123,19 @@ function RecCard({
         <span className="text-zinc-600">ER {(item.er * 100).toFixed(0)}%</span>
       </div>
 
+      {item.patterns.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1">
+          {item.patterns.map((p) => (
+            <Badge
+              key={p.id}
+              tone={p.direction === 'bullish' ? 'up' : p.direction === 'bearish' ? 'down' : 'warn'}
+            >
+              {(p.direction === 'bullish' ? '▲ ' : p.direction === 'bearish' ? '▼ ' : '◆ ') + p.name}
+            </Badge>
+          ))}
+        </div>
+      )}
+
       <div className="mb-3 flex flex-wrap gap-1">
         {item.reasons.map((r) => (
           <Badge key={r} tone={POSITIVE_REASONS.has(r) ? 'accent' : 'warn'}>

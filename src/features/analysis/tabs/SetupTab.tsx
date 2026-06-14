@@ -9,20 +9,25 @@ import { useOpenInterest, useLongShort, useTakerFlow } from '../useDerivatives'
 import { useAccount } from '../../stats/useStats'
 import { toBinancePeriod, higherTimeframe } from '../../../lib/bitunix/intervals'
 import { getFundingRate, getKline } from '../../../lib/bitunix/rest'
-import { parseKlines } from '../../../lib/candles'
+import { parseKlines, type Candle } from '../../../lib/candles'
 import {
   buildSetup,
   type SetupResult,
   type TradePlan,
   type RangeStraddlePlan,
   type RangeStraddleLeg,
+  type DetectedPattern,
+  type ReversalRisk,
+  type ReversalLevel,
+  type MarketContext,
 } from '../setup/engine'
 import { OrderTicket } from '../setup/OrderTicket'
-import { SetupChart, type PriceLineDef } from '../../../components/charts/SetupChart'
+import { SetupChart, type PriceLineDef, type ChartMarker } from '../../../components/charts/SetupChart'
 import { Panel, Spinner, EmptyState, Badge } from '../../../components/ui/primitives'
 import { BinanceNote } from '../controls'
 import { useUiPrefs, type TradeMode } from '../../../store/uiPrefs'
-import { fmtPrice, toNum } from '../../../lib/format'
+import { ema } from '../../../lib/indicators'
+import { fmtPrice, fmtCompact, fmtPct, toNum } from '../../../lib/format'
 
 export function SetupTab() {
   const symbol = useMarket((s) => s.symbol)
@@ -49,6 +54,16 @@ export function SetupTab() {
     refetchInterval: 30_000,
     retry: 0,
   })
+  // BTC market context (volatility) — shared across symbols, lightly amplifies
+  // the reversal-risk score for alts when BTC itself is volatile.
+  const btc = useQuery({
+    queryKey: ['btc-context', priceType],
+    queryFn: async () => parseKlines(await getKline({ symbol: 'BTCUSDT', interval: '1h', limit: 200, type: priceType })),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    retry: 0,
+  })
+  const marketContext = useMemo<MarketContext>(() => btcMarketContext(btc.data), [btc.data])
   const account = useAccount()
   const lastPrice = useTickers((s) => s.map[symbol]?.last ?? 0)
 
@@ -74,8 +89,9 @@ export function SetupTab() {
         taker: taker.data,
         fundingRate: funding.data ? toNum(funding.data.fundingRate) : undefined,
       },
+      marketContext,
     })
-  }, [candles, book, htf.data, oi.data, ls.data, taker.data, funding.data])
+  }, [candles, book, htf.data, oi.data, ls.data, taker.data, funding.data, marketContext])
 
   // Follow the bias-preferred side until the user explicitly picks one.
   const preferred: 'LONG' | 'SHORT' = setup ? (setup.bias >= 0 ? 'LONG' : 'SHORT') : 'LONG'
@@ -124,6 +140,17 @@ export function SetupTab() {
     return out
   }, [setup, tradeSide, showLevels, tradeMode])
 
+  const markers = useMemo<ChartMarker[]>(() => {
+    if (!setup) return []
+    return setup.patterns.map((p) => ({
+      time: p.time,
+      position: p.direction === 'bullish' ? 'belowBar' : p.direction === 'bearish' ? 'aboveBar' : 'inBar',
+      color: p.direction === 'bullish' ? '#22c55e' : p.direction === 'bearish' ? '#ef4444' : '#f59e0b',
+      shape: p.direction === 'bullish' ? 'arrowUp' : p.direction === 'bearish' ? 'arrowDown' : 'circle',
+      text: p.short,
+    }))
+  }, [setup])
+
   if (status === 'loading' || (!setup && status !== 'error')) {
     return (
       <Panel>
@@ -149,6 +176,21 @@ export function SetupTab() {
       ) : null}
 
       <BiasMeter setup={setup} htfInterval={htfInterval} />
+
+      <PatternsCard patterns={setup.patterns} candles={candles} />
+
+      <ReversalRiskCard
+        risk={
+          tradeMode === 'both'
+            ? setup.reversalRisk.long.score >= setup.reversalRisk.short.score
+              ? setup.reversalRisk.long
+              : setup.reversalRisk.short
+            : tradeSide === 'LONG'
+              ? setup.reversalRisk.long
+              : setup.reversalRisk.short
+        }
+        symbol={symbol}
+      />
 
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-zinc-500">
@@ -206,6 +248,9 @@ export function SetupTab() {
         tradeMode={tradeMode}
         onTradeModeChange={setTradeMode}
         currentPrice={setup.price || lastPrice}
+        bias={setup.bias}
+        biasLabel={setup.biasLabel}
+        backtest={setup.backtest}
         positionMode={account.data?.positionMode}
         availableBalance={account.data ? toNum(account.data.available) : undefined}
       />
@@ -245,7 +290,7 @@ export function SetupTab() {
           </div>
         }
       >
-        <SetupChart candles={candles} lines={lines} height={460} />
+        <SetupChart candles={candles} lines={lines} markers={markers} height={460} />
       </Panel>
 
       <SignalQuality setup={setup} interval={interval} />
@@ -260,6 +305,34 @@ export function SetupTab() {
       </div>
     </div>
   )
+}
+
+/** BTC volatility/trend context for the reversal-risk model (from BTC candles). */
+function btcMarketContext(candles?: Candle[]): MarketContext {
+  if (!candles || candles.length < 30) return {}
+  const n = candles.length
+  const p = 14
+  let trSum = 0
+  for (let i = n - p; i < n; i++) {
+    const c = candles[i]
+    const prev = candles[i - 1]
+    if (!c || !prev) continue
+    trSum += Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close))
+  }
+  const atr = trSum / p
+  const last = candles[n - 1].close
+  const btcAtrPct = last > 0 ? (atr / last) * 100 : undefined
+  const eSeries = ema(candles.map((c) => c.close), 50)
+  let e: number | null = null
+  for (let i = eSeries.length - 1; i >= 0; i--) {
+    const v = eSeries[i]
+    if (v !== null && Number.isFinite(v)) {
+      e = v
+      break
+    }
+  }
+  const btcTrend = e !== null && atr > 0 ? Math.max(-1, Math.min(1, (last - e) / (atr * 5))) : undefined
+  return { btcAtrPct, btcTrend }
 }
 
 function SignalQuality({ setup, interval }: { setup: SetupResult; interval: string }) {
@@ -295,6 +368,187 @@ function SignalQuality({ setup, interval }: { setup: SetupResult; interval: stri
         </div>
       )}
     </Panel>
+  )
+}
+
+function PatternsCard({ patterns, candles }: { patterns: DetectedPattern[]; candles: Candle[] }) {
+  return (
+    <Panel
+      title="Entry patterns detected"
+      subtitle="Each recognized pattern with a focused view of the surrounding price action (about 60 candles each side)"
+    >
+      {/* Fixed height + internal scroll so the layout doesn't jump as the number
+          of detected patterns changes between refreshes. */}
+      <div className="h-[460px] overflow-y-auto pr-1">
+        {patterns.length === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-xs text-zinc-500">
+              No clear entry pattern on this timeframe right now — waiting for a candlestick or price-action signal.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {patterns.map((p, i) => {
+          const tone = p.direction === 'bullish' ? 'up' : p.direction === 'bearish' ? 'down' : 'warn'
+          const arrow = p.direction === 'bullish' ? '▲' : p.direction === 'bearish' ? '▼' : '◆'
+          const lo = Math.max(0, p.barIndex - 60)
+          const hi = Math.min(candles.length, p.barIndex + 61) // +61 keeps up to 60 candles after the pattern
+          const windowCandles = candles.slice(lo, hi)
+          const marker: ChartMarker = {
+            time: p.time,
+            position: p.direction === 'bullish' ? 'belowBar' : p.direction === 'bearish' ? 'aboveBar' : 'inBar',
+            color: p.direction === 'bullish' ? '#22c55e' : p.direction === 'bearish' ? '#ef4444' : '#f59e0b',
+            shape: p.direction === 'bullish' ? 'arrowUp' : p.direction === 'bearish' ? 'arrowDown' : 'circle',
+            text: p.short,
+          }
+          return (
+            <div
+              key={i}
+              className={clsx(
+                'grid items-stretch gap-3 rounded-lg border p-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]',
+                p.direction === 'bullish'
+                  ? 'border-emerald-500/30 bg-emerald-500/5'
+                  : p.direction === 'bearish'
+                    ? 'border-rose-500/30 bg-rose-500/5'
+                    : 'border-amber-500/30 bg-amber-500/5',
+              )}
+            >
+              <div className="min-w-0">
+                <Badge tone={tone}>
+                  {arrow} {p.name}
+                </Badge>
+                <div className="mt-1.5 text-xs text-zinc-300">{p.description}</div>
+                <div className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-600">
+                  {p.kind === 'candlestick' ? 'Candlestick' : 'Price action'} · confidence{' '}
+                  {(p.confidence * 100).toFixed(0)}%
+                </div>
+              </div>
+              <div className="min-h-[200px] overflow-hidden rounded-md border border-zinc-800/60 bg-zinc-950/30">
+                {windowCandles.length > 0 ? (
+                  <SetupChart candles={windowCandles} lines={[]} markers={[marker]} height={200} interactive={false} />
+                ) : null}
+              </div>
+            </div>
+          )
+        })}
+          </div>
+        )}
+      </div>
+    </Panel>
+  )
+}
+
+const RISK_TONES: Record<ReversalLevel, { label: string; ring: string; pill: string; bar: string; text: string }> = {
+  low: { label: 'Low', ring: 'ring-1 ring-zinc-700/60', pill: 'bg-emerald-500/15 text-emerald-300', bar: 'bg-emerald-500', text: 'text-emerald-400' },
+  elevated: { label: 'Elevated', ring: 'ring-1 ring-amber-500/50', pill: 'bg-amber-500/15 text-amber-300', bar: 'bg-amber-500', text: 'text-amber-400' },
+  high: { label: 'High', ring: 'ring-2 ring-orange-500/60', pill: 'bg-orange-500/15 text-orange-300', bar: 'bg-orange-500', text: 'text-orange-400' },
+  extreme: { label: 'Extreme', ring: 'ring-2 ring-rose-500/70', pill: 'bg-rose-500/20 text-rose-300', bar: 'bg-rose-500', text: 'text-rose-400' },
+}
+
+function ReversalRiskCard({ risk, symbol }: { risk: ReversalRisk; symbol: string }) {
+  const base = symbol.replace(/USD[TC]?$/i, '') || symbol
+  const tone = RISK_TONES[risk.level]
+
+  if (!risk.available) {
+    return (
+      <section className="panel p-4 ring-1 ring-zinc-700/60">
+        <header className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Badge tone="neutral">Reversal fuel · squeeze danger</Badge>
+          </div>
+          <span className="text-[11px] uppercase tracking-wide text-zinc-500">n/a</span>
+        </header>
+        <p className="text-xs text-zinc-500">
+          {risk.dataNote ?? 'Open-interest, positioning and order-book data are unavailable for this symbol.'}
+        </p>
+      </section>
+    )
+  }
+
+  const dirText =
+    risk.direction === 'flush-down'
+      ? 'Downside reversal vs a LONG — longs getting hunted / liquidated could flip price down.'
+      : 'Upside reversal vs a SHORT — shorts getting squeezed could flip price up.'
+  const dirArrow = risk.direction === 'flush-down' ? '▼' : '▲'
+  const lsText = risk.longAccount > 0
+    ? `${(risk.longAccount * 100).toFixed(0)}% long / ${(risk.shortAccount * 100).toFixed(0)}% short`
+    : `L/S ${risk.longShortRatio.toFixed(2)}`
+  const fuelSide = risk.side === 'LONG' ? 'longs' : 'shorts'
+
+  return (
+    <section className={clsx('panel p-4', tone.ring)}>
+      <header className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-zinc-100">Reversal fuel · squeeze danger</span>
+            <span className="rounded-md border border-zinc-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
+              vs {risk.side}
+            </span>
+            <span className={clsx('rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide', tone.pill)}>
+              {tone.label} · {risk.score.toFixed(0)}
+            </span>
+          </div>
+          <p className={clsx('mt-1 text-xs', tone.text)}>
+            {dirArrow} {dirText}
+          </p>
+        </div>
+        {risk.btcMult !== 1 ? (
+          <span className="shrink-0 text-[10px] uppercase tracking-wide text-zinc-600">
+            BTC vol ×{risk.btcMult.toFixed(2)}
+          </span>
+        ) : null}
+      </header>
+
+      <div className="relative mb-3 h-2.5 overflow-hidden rounded-full bg-zinc-800">
+        <div className={clsx('absolute left-0 top-0 h-full rounded-full', tone.bar)} style={{ width: `${Math.min(100, risk.score)}%` }} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Metric label="Fuel (est.)" value={`${fmtCompact(risk.fuelCoin)} ${base}`} accent />
+        <Metric label="Fuel notional" value={`$${fmtCompact(risk.fuelNotional)}`} accent />
+        <Metric label="Open interest" value={risk.oiNotional > 0 ? `$${fmtCompact(risk.oiNotional)}` : '—'} />
+        <Metric
+          label="OI change"
+          value={fmtPct(risk.oiChangePct * 100, 1)}
+          tone={risk.oiChangePct >= 0 ? 'up' : 'down'}
+        />
+        <Metric label="Crowd" value={lsText} />
+        <Metric label="Funding" value={risk.funding !== null ? `${(risk.funding * 100).toFixed(4)}%` : '—'} />
+        <Metric
+          label="Trigger level"
+          value={
+            risk.triggerLevel !== null
+              ? `${fmtPrice(risk.triggerLevel)}${risk.triggerDistanceAtr !== null ? ` · ${risk.triggerDistanceAtr.toFixed(1)} ATR` : ''}`
+              : '—'
+          }
+        />
+        <Metric label="Book to break" value={risk.triggerCostNotional !== null ? `$${fmtCompact(risk.triggerCostNotional)}` : '—'} />
+      </div>
+
+      {risk.components.length > 0 ? (
+        <div className="mt-3 flex flex-col gap-1.5">
+          {risk.components.map((c, i) => (
+            <div key={i} className="flex items-center gap-3 text-xs">
+              <div className="w-36 shrink-0">
+                <div className="text-zinc-300">{c.label}</div>
+                <div className="text-[10px] text-zinc-600">{c.detail}</div>
+              </div>
+              <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-zinc-800">
+                <div className={clsx('absolute left-0 top-0 h-full rounded-full', tone.bar)} style={{ width: `${Math.round(c.value * 100)}%` }} />
+              </div>
+              <div className="w-8 shrink-0 text-right tabular text-zinc-400">{Math.round(c.value * 100)}</div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <p className="mt-3 text-[10px] text-zinc-600">
+        Estimated "ammo" to flip price {risk.direction === 'flush-down' ? 'down' : 'up'} against a {risk.side}: the {fuelSide}'
+        open interest ({fmtCompact(risk.fuelCoin)} {base}), normalized to this coin's turnover and amplified by BTC volatility.
+        Switches with the LONG / SHORT selection. An estimate, not exact position counts.
+        {risk.dataNote ? ` ${risk.dataNote}` : ''}
+      </p>
+    </section>
   )
 }
 

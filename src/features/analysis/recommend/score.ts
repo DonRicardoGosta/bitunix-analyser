@@ -2,6 +2,7 @@ import type { Candle } from '../../../lib/candles'
 import { atr } from '../../../lib/indicators'
 import { choppinessIndex, efficiencyRatio } from '../../../lib/indicators'
 import { buildCtx, candleBias, detectRegime, htfProxyAt, neutralBand } from '../setup/signal'
+import { detectPatterns, type DetectedPattern } from '../setup/patterns'
 
 // Scores how "tradeable / easy to read" a coin's movement is, from candles:
 //  - efficiency ratio (clean directional move vs. noise)
@@ -31,6 +32,7 @@ export interface CandidateScore {
   bias: number // -1..+1 candle-derived directional read (matches Setup tab)
   conviction: number // 0..100 directional conviction
   reasons: string[]
+  patterns: DetectedPattern[] // entry patterns completing near now (signal only)
   er: number
   chop: number
   atrPct: number
@@ -80,5 +82,8 @@ export function scoreCandidate(candles: Candle[], quoteVol: number): CandidateSc
   if (liqScore >= 70) reasons.push('Liquid')
   if (direction !== 'NEUTRAL' && conviction >= 40) reasons.push('Clear bias')
 
-  return { score, direction, bias, conviction, reasons, er, chop, atrPct }
+  // Entry patterns (signal only — does not alter the ranking score).
+  const patterns = detectPatterns(candles, { atr: atrLast, regime })
+
+  return { score, direction, bias, conviction, reasons, patterns, er, chop, atrPct }
 }
