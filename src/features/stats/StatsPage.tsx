@@ -9,10 +9,14 @@ import {
   usePositionTpsl,
   type RangeParams,
 } from './useStats'
-import { buildTpslMap, projectedBalances } from './positions'
+import { buildTpslMap, positionOutcome, projectedBalances } from './positions'
 import { usePositionReviews } from './usePositionReviews'
 import { reviewPosition, type PositionReview } from './review'
+import { suggestTighterStop, type StopSuggestion } from './stopSuggest'
+import type { TpslOrderRaw } from '../../lib/bitunix/types'
+import { applyBestSetup, BEST_SETUP, isBestSetupActive } from '../analysis/setup/bestSetup'
 import { useTickers } from '../../store/tickers'
+import { useMarket } from '../../store/market'
 import { useUiPrefs } from '../../store/uiPrefs'
 import { INTERVALS } from '../../lib/bitunix/intervals'
 import type { KlineInterval } from '../../lib/bitunix/rest'
@@ -70,6 +74,15 @@ export function StatsPage() {
   const toNow = useUiPrefs((s) => s.statsToNow)
   const reviewInterval = useUiPrefs((s) => s.statsReviewInterval)
   const setStats = useUiPrefs((s) => s.setStats)
+  const ticketTradeMode = useUiPrefs((s) => s.ticketTradeMode)
+  const ticketTpMode = useUiPrefs((s) => s.ticketTpMode)
+  const marketInterval = useMarket((s) => s.interval)
+  const bestActive = isBestSetupActive({
+    interval: marketInterval,
+    tradeMode: ticketTradeMode,
+    tpMode: ticketTpMode,
+    reviewInterval,
+  })
 
   // Debounce the custom inputs so editing dates doesn't spam the history API.
   const [committedFrom, setCommittedFrom] = useState(fromInput)
@@ -108,11 +121,47 @@ export function StatsPage() {
     const out: Record<string, PositionReview> = {}
     for (const p of pending.data ?? []) {
       const mark = tickers[p.symbol]?.last ?? toNum(p.avgOpenPrice)
-      out[p.positionId] = reviewPosition(p, mark, reviewSignals.data?.[p.symbol])
+      out[p.positionId] = reviewPosition(p, mark, reviewSignals.data?.[p.symbol]?.signal)
     }
     return out
   }, [pending.data, tickers, reviewSignals.data])
   const toClose = (pending.data ?? []).filter((p) => reviewByPositionId[p.positionId]?.verdict === 'close')
+
+  // The standalone SL trigger order per position (largest qty wins), so the
+  // "Tighten SL" action can modify it directly instead of duplicating stops.
+  const slOrderByPositionId = useMemo(() => {
+    const out: Record<string, TpslOrderRaw> = {}
+    for (const o of tpsl.data ?? []) {
+      const sl = toNum(o.slPrice, NaN)
+      if (!o.positionId || !Number.isFinite(sl) || sl <= 0) continue
+      const cur = out[o.positionId]
+      if (!cur || toNum(o.slQty, 0) > toNum(cur.slQty, 0)) out[o.positionId] = o
+    }
+    return out
+  }, [tpsl.data])
+
+  // Tighter-stop suggestions: only present when the current stop is too far and
+  // a sensible (structure/ATR-anchored) closer level exists.
+  const stopSuggestionByPositionId = useMemo(() => {
+    const out: Record<string, StopSuggestion | null> = {}
+    for (const p of pending.data ?? []) {
+      const mark = tickers[p.symbol]?.last ?? toNum(p.avgOpenPrice)
+      const a = reviewSignals.data?.[p.symbol]
+      const o = positionOutcome(p, tpslMap[p.positionId], mark)
+      out[p.positionId] = a
+        ? suggestTighterStop({
+            isLong: o.isLong,
+            entry: toNum(p.avgOpenPrice),
+            mark,
+            currentSl: o.slPrice,
+            atr: a.atr,
+            swingLows: a.swingLows,
+            swingHighs: a.swingHighs,
+          })
+        : null
+    }
+    return out
+  }, [pending.data, tickers, reviewSignals.data, tpslMap])
 
   const positions = useMemo(() => normalizePositions(histPos.data ?? []), [histPos.data])
   const stats = useMemo(() => computePositionStats(positions), [positions])
@@ -260,6 +309,18 @@ export function StatsPage() {
         title="Open positions"
         actions={
           <div className="flex items-center gap-2">
+            <button
+              onClick={applyBestSetup}
+              title={`High win-rate preset — ${BEST_SETUP.interval} analysis · single direction · ${BEST_SETUP.tpMode} · review on ${BEST_SETUP.reviewInterval}`}
+              className={
+                'rounded-lg border px-2.5 py-1 text-xs font-medium transition ' +
+                (bestActive
+                  ? 'border-cyan-400 bg-cyan-500/15 text-cyan-300'
+                  : 'border-zinc-700 text-zinc-300 hover:bg-zinc-800')
+              }
+            >
+              {bestActive ? '\u2713 Best setup' : 'Best setup'}
+            </button>
             <label className="flex items-center gap-1.5 text-xs text-zinc-500">
               Review TF
               <select
@@ -297,7 +358,13 @@ export function StatsPage() {
         {pending.isLoading ? (
           <Spinner />
         ) : (
-          <PositionsTable positions={pending.data ?? []} tpslMap={tpslMap} reviews={reviewByPositionId} />
+          <PositionsTable
+            positions={pending.data ?? []}
+            tpslMap={tpslMap}
+            reviews={reviewByPositionId}
+            stopSuggestions={stopSuggestionByPositionId}
+            slOrders={slOrderByPositionId}
+          />
         )}
       </Panel>
 

@@ -10,11 +10,18 @@ import { useAccount } from '../../stats/useStats'
 import { toBinancePeriod, higherTimeframe } from '../../../lib/bitunix/intervals'
 import { getFundingRate, getKline } from '../../../lib/bitunix/rest'
 import { parseKlines } from '../../../lib/candles'
-import { buildSetup, type SetupResult, type TradePlan } from '../setup/engine'
+import {
+  buildSetup,
+  type SetupResult,
+  type TradePlan,
+  type RangeStraddlePlan,
+  type RangeStraddleLeg,
+} from '../setup/engine'
 import { OrderTicket } from '../setup/OrderTicket'
 import { SetupChart, type PriceLineDef } from '../../../components/charts/SetupChart'
 import { Panel, Spinner, EmptyState, Badge } from '../../../components/ui/primitives'
 import { BinanceNote } from '../controls'
+import { useUiPrefs, type TradeMode } from '../../../store/uiPrefs'
 import { fmtPrice, toNum } from '../../../lib/format'
 
 export function SetupTab() {
@@ -47,6 +54,8 @@ export function SetupTab() {
 
   const [tradeSide, setTradeSideState] = useState<'LONG' | 'SHORT'>('LONG')
   const [showLevels, setShowLevels] = useState(true)
+  const tradeMode = useUiPrefs((s) => s.ticketTradeMode)
+  const setTradeMode = (m: TradeMode) => useUiPrefs.getState().setTicket({ ticketTradeMode: m })
   const userPickedRef = useRef(false)
   const chooseSide = (s: 'LONG' | 'SHORT') => {
     userPickedRef.current = true
@@ -79,14 +88,28 @@ export function SetupTab() {
 
   const lines = useMemo<PriceLineDef[]>(() => {
     if (!setup) return []
+    const out: PriceLineDef[] = []
+
+    if (tradeMode === 'both' && setup.straddle.long && setup.straddle.short) {
+      const s = setup.straddle
+      out.push(
+        { price: s.long!.entry, color: '#94a3b8', title: 'Entry (both)', width: 2 },
+        { price: s.long!.tp, color: '#22c55e', title: 'LONG TP · resistance', width: 2 },
+        { price: s.short!.tp, color: '#ef4444', title: 'SHORT TP · support', width: 2 },
+        { price: s.long!.stop, color: '#f43f5e', title: 'LONG stop', dashed: true },
+        { price: s.short!.stop, color: '#f43f5e', title: 'SHORT stop', dashed: true },
+      )
+      return out
+    }
+
     const plan = tradeSide === 'LONG' ? setup.long : setup.short
     const isLong = tradeSide === 'LONG'
-    const out: PriceLineDef[] = [
+    out.push(
       { price: plan.entry, color: isLong ? '#22c55e' : '#ef4444', title: `${tradeSide} entry`, width: 2 },
       { price: plan.stop, color: '#f43f5e', title: 'Stop', dashed: true },
       { price: plan.tp1, color: '#22d3ee', title: 'TP1' },
       { price: plan.tp2, color: '#14b8a6', title: 'TP2' },
-    ]
+    )
     if (showLevels) {
       const top = [...setup.levels].sort((a, b) => b.strength - a.strength).slice(0, 6)
       for (const l of top) {
@@ -99,7 +122,7 @@ export function SetupTab() {
       }
     }
     return out
-  }, [setup, tradeSide, showLevels])
+  }, [setup, tradeSide, showLevels, tradeMode])
 
   if (status === 'loading' || (!setup && status !== 'error')) {
     return (
@@ -127,22 +150,51 @@ export function SetupTab() {
 
       <BiasMeter setup={setup} htfInterval={htfInterval} />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <PlanCard
-          plan={setup.long}
-          preferred={preferred === 'LONG'}
-          biasLabel={setup.biasLabel}
-          active={tradeSide === 'LONG'}
-          onTrade={() => chooseSide('LONG')}
-        />
-        <PlanCard
-          plan={setup.short}
-          preferred={preferred === 'SHORT'}
-          biasLabel={setup.biasLabel}
-          active={tradeSide === 'SHORT'}
-          onTrade={() => chooseSide('SHORT')}
-        />
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-zinc-500">
+          {tradeMode === 'both'
+            ? 'Both directions: open a LONG and a SHORT at once, each targeting the opposite strong level. Profits when price oscillates in the range.'
+            : 'Single: one-sided LONG or SHORT plan.'}
+        </p>
+        <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+          {([
+            ['single', 'Single'],
+            ['both', 'Both directions'],
+          ] as const).map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => setTradeMode(m)}
+              className={clsx(
+                'rounded-md px-3 py-1 text-xs font-medium',
+                tradeMode === m ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {tradeMode === 'both' ? (
+        <StraddleCard straddle={setup.straddle} interval={interval} />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <PlanCard
+            plan={setup.long}
+            preferred={preferred === 'LONG'}
+            biasLabel={setup.biasLabel}
+            active={tradeSide === 'LONG'}
+            onTrade={() => chooseSide('LONG')}
+          />
+          <PlanCard
+            plan={setup.short}
+            preferred={preferred === 'SHORT'}
+            biasLabel={setup.biasLabel}
+            active={tradeSide === 'SHORT'}
+            onTrade={() => chooseSide('SHORT')}
+          />
+        </div>
+      )}
 
       <OrderTicket
         symbol={symbol}
@@ -150,6 +202,9 @@ export function SetupTab() {
         onSideChange={chooseSide}
         long={setup.long}
         short={setup.short}
+        straddle={setup.straddle}
+        tradeMode={tradeMode}
+        onTradeModeChange={setTradeMode}
         currentPrice={setup.price || lastPrice}
         positionMode={account.data?.positionMode}
         availableBalance={account.data ? toNum(account.data.available) : undefined}
@@ -366,6 +421,130 @@ function PlanCard({
         </ul>
       )}
     </section>
+  )
+}
+
+function StraddleCard({ straddle, interval }: { straddle: RangeStraddlePlan; interval: string }) {
+  const { support, resistance, long, short, backtest } = straddle
+  return (
+    <section
+      className={clsx('panel p-4', straddle.valid ? 'ring-2 ring-cyan-500/60' : 'ring-1 ring-zinc-700/60')}
+    >
+      <header className="mb-3 flex items-center justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="accent">Both directions · range straddle</Badge>
+          {straddle.valid ? <Badge tone="up">Valid setup</Badge> : <Badge tone="warn">Not valid here</Badge>}
+        </div>
+        <div className="text-right">
+          <div className="text-[11px] uppercase tracking-wide text-zinc-500">Quality</div>
+          <div className="tabular text-sm font-semibold text-zinc-100">{straddle.quality.toFixed(0)}</div>
+        </div>
+      </header>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Metric label="Resistance (LONG TP)" value={resistance ? fmtPrice(resistance.price) : '—'} tone="down" />
+        <Metric label="Support (SHORT TP)" value={support ? fmtPrice(support.price) : '—'} tone="up" />
+        <Metric label="Range width" value={`${(straddle.rangePct * 100).toFixed(2)}%`} />
+        <Metric label="Both-TP R:R" value={straddle.bestCaseR ? straddle.bestCaseR.toFixed(2) : '—'} accent />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <LegBox label="LONG → resistance" tone="up" leg={long} />
+        <LegBox label="SHORT → support" tone="down" leg={short} />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {resistance && (
+          <Badge tone="neutral">
+            Resistance strength {(resistance.strength * 100).toFixed(0)}% · {resistance.sources.join(', ')}
+          </Badge>
+        )}
+        {support && (
+          <Badge tone="neutral">
+            Support strength {(support.strength * 100).toFixed(0)}% · {support.sources.join(', ')}
+          </Badge>
+        )}
+      </div>
+
+      <div className="mt-3 rounded-lg border border-zinc-800 p-3">
+        <div className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">
+          Range-reversal backtest ({interval}) — do these levels actually reverse price?
+        </div>
+        {backtest ? (
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Metric
+                label="Both-TP rate"
+                value={`${(backtest.bounceRate * 100).toFixed(0)}%`}
+                tone={backtest.bounceRate >= 0.5 ? 'up' : 'down'}
+              />
+              <Metric
+                label="Win rate"
+                value={`${(backtest.winRate * 100).toFixed(0)}%`}
+                tone={backtest.winRate >= 0.5 ? 'up' : 'down'}
+              />
+              <Metric
+                label="Expectancy"
+                value={`${backtest.expectancy >= 0 ? '+' : ''}${backtest.expectancy.toFixed(2)}R`}
+                tone={backtest.expectancy >= 0 ? 'up' : 'down'}
+              />
+              <Metric label="Samples" value={`${backtest.samples}`} />
+            </div>
+            <p className="mt-2 text-[11px] text-zinc-500">
+              {backtest.bothTp}/{backtest.samples} straddles saw both legs take profit (the range held and price
+              reversed to the far side) over {backtest.lookbackBars} bars.
+              {backtest.samples < 8 ? ' Small sample — treat with caution.' : ''}
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-zinc-500">Not enough history to validate range reversals.</p>
+        )}
+      </div>
+
+      {straddle.note && (
+        <p className="mt-3 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{straddle.note}</p>
+      )}
+
+      {straddle.reasons.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs text-zinc-400">
+          {straddle.reasons.map((r, i) => (
+            <li key={i} className="flex gap-1.5">
+              <span className="text-zinc-600">•</span>
+              {r}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function LegBox({ label, tone, leg }: { label: string; tone: 'up' | 'down'; leg: RangeStraddleLeg | null }) {
+  return (
+    <div className="rounded-lg border border-zinc-800 p-2.5">
+      <div className={clsx('mb-1.5 text-xs font-semibold', tone === 'up' ? 'text-emerald-400' : 'text-rose-400')}>
+        {label}
+      </div>
+      {leg ? (
+        <div className="grid grid-cols-3 gap-1 text-[11px]">
+          <div>
+            <div className="text-zinc-600">Entry (mkt)</div>
+            <div className="tabular text-zinc-200">{fmtPrice(leg.entry)}</div>
+          </div>
+          <div>
+            <div className="text-zinc-600">TP</div>
+            <div className="tabular text-emerald-300">{fmtPrice(leg.tp)}</div>
+          </div>
+          <div>
+            <div className="text-zinc-600">Stop</div>
+            <div className="tabular text-rose-300">{fmtPrice(leg.stop)}</div>
+          </div>
+          <div className="col-span-3 mt-0.5 text-zinc-600">R:R {leg.rr.toFixed(2)}</div>
+        </div>
+      ) : (
+        <div className="text-[11px] text-zinc-600">n/a</div>
+      )}
+    </div>
   )
 }
 

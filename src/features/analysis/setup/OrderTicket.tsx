@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import type { TradePlan } from './engine'
+import type { TradePlan, RangeStraddlePlan, RangeStraddleLeg } from './engine'
 import {
   projectOrder,
   roundToPrecision,
+  type OrderProjection,
   type TpMode,
 } from './order'
 import { useSymbolSpecs } from '../useSymbolSpecs'
 import { useCredentials } from '../../../store/credentials'
-import { useUiPrefs } from '../../../store/uiPrefs'
+import { useUiPrefs, type TradeMode } from '../../../store/uiPrefs'
 import {
   changeLeverage,
   changeMarginMode,
@@ -27,6 +28,9 @@ interface Props {
   onSideChange: (s: 'LONG' | 'SHORT') => void
   long: TradePlan
   short: TradePlan
+  straddle: RangeStraddlePlan
+  tradeMode: TradeMode
+  onTradeModeChange: (m: TradeMode) => void
   currentPrice: number
   positionMode?: string
   availableBalance?: number
@@ -44,11 +48,15 @@ export function OrderTicket({
   onSideChange,
   long,
   short,
+  straddle,
+  tradeMode,
+  onTradeModeChange,
   currentPrice,
   positionMode,
   availableBalance,
 }: Props) {
   const plan = side === 'LONG' ? long : short
+  const both = tradeMode === 'both'
   const { spec } = useSymbolSpecs(symbol)
   const marginCoin = useCredentials((s) => s.marginCoin)
   const hasKeys = useCredentials((s) => s.hasKeys())
@@ -61,6 +69,7 @@ export function OrderTicket({
   const marginMode = useUiPrefs((s) => s.ticketMarginMode)
   const tpMode = useUiPrefs((s) => s.ticketTpMode)
   const split = useUiPrefs((s) => s.ticketSplit)
+  const straddleSplit = useUiPrefs((s) => s.ticketStraddleSplit)
   const setTicket = useUiPrefs((s) => s.setTicket)
   const setLeverage = (v: number) => setTicket({ ticketLeverage: v })
   const setMargin = (v: string) => setTicket({ ticketMargin: v })
@@ -68,6 +77,7 @@ export function OrderTicket({
   const setMarginMode = (v: 'CROSS' | 'ISOLATION') => setTicket({ ticketMarginMode: v })
   const setTpMode = (v: TpMode) => setTicket({ ticketTpMode: v })
   const setSplit = (v: number) => setTicket({ ticketSplit: v })
+  const setStraddleSplit = (v: number) => setTicket({ ticketStraddleSplit: v })
 
   const [entry, setEntry] = useState('')
   const [stop, setStop] = useState('')
@@ -127,9 +137,72 @@ export function OrderTicket({
     [side, effectiveEntry, stop, tp1, tp2, leverage, margin, tpMode, split, spec, marginMode, availableBalance],
   )
 
+  // Straddle (both directions) projection: one MARKET leg per side, each sized
+  // from its share of the entered margin, with its own TP/SL at the levels.
+  const totalMargin = toNum(margin)
+  const longProj = useMemo(
+    () =>
+      straddle.long
+        ? projectOrder({
+            side: 'LONG',
+            entry: currentPrice,
+            stop: straddle.long.stop,
+            tp1: straddle.long.tp,
+            tp2: straddle.long.tp,
+            leverage,
+            margin: totalMargin * straddleSplit,
+            tpMode: 'TP1',
+            split: 1,
+            spec,
+            marginMode,
+            availableBalance,
+          })
+        : null,
+    [straddle.long, currentPrice, leverage, totalMargin, straddleSplit, spec, marginMode, availableBalance],
+  )
+  const shortProj = useMemo(
+    () =>
+      straddle.short
+        ? projectOrder({
+            side: 'SHORT',
+            entry: currentPrice,
+            stop: straddle.short.stop,
+            tp1: straddle.short.tp,
+            tp2: straddle.short.tp,
+            leverage,
+            margin: totalMargin * (1 - straddleSplit),
+            tpMode: 'TP1',
+            split: 1,
+            spec,
+            marginMode,
+            availableBalance,
+          })
+        : null,
+    [straddle.short, currentPrice, leverage, totalMargin, straddleSplit, spec, marginMode, availableBalance],
+  )
+
+  // Combined straddle outcomes (in USDT): range holds (both TP) vs. breakout.
+  const straddleBestCase = (longProj?.profitTotal ?? 0) + (shortProj?.profitTotal ?? 0)
+  const breakoutUp = (longProj?.profitTotal ?? 0) + (shortProj?.lossPnl ?? 0) // through R: long TP, short stop
+  const breakoutDown = (shortProj?.profitTotal ?? 0) + (longProj?.lossPnl ?? 0) // through S: short TP, long stop
+  const straddleWorstCase = Math.min(breakoutUp, breakoutDown)
+  const straddleWarnings = [...(longProj?.warnings ?? []), ...(shortProj?.warnings ?? [])]
+  const straddleNotices = [...(longProj?.notices ?? []), ...(shortProj?.notices ?? [])]
+
   const presets = LEVERAGE_PRESETS.filter((p) => p >= spec.minLeverage && p <= spec.maxLeverage)
   const canSubmit =
     hasKeys && liveTradingEnabled && projection.qty > 0 && projection.warnings.length === 0 && submit.kind !== 'submitting'
+  // Note: `straddle.valid` is intentionally NOT required here — the user may
+  // open the straddle even when it fails validation (we only warn). The real
+  // blockers remain: keys, live trading, a sizeable position, and broker-level
+  // warnings (size below minimum, etc.).
+  const canSubmitStraddle =
+    hasKeys &&
+    liveTradingEnabled &&
+    (longProj?.qty ?? 0) > 0 &&
+    (shortProj?.qty ?? 0) > 0 &&
+    straddleWarnings.length === 0 &&
+    submit.kind !== 'submitting'
 
   async function doSubmit() {
     setShowConfirm(false)
@@ -189,6 +262,63 @@ export function OrderTicket({
     }
   }
 
+  // Opens BOTH legs of the range straddle (long + short) in hedge mode, each
+  // with its TP at the opposite level and its stop just beyond its own level.
+  async function doSubmitStraddle() {
+    setShowConfirm(false)
+    if (!straddle.long || !straddle.short || !longProj || !shortProj) return
+    const orderIds: string[] = []
+    try {
+      setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
+      let hedge = positionMode === 'HEDGE'
+      try {
+        await changePositionMode('HEDGE')
+        hedge = true
+      } catch {
+        // Can't switch while positions/orders exist — keep the known mode.
+      }
+
+      setSubmit({ kind: 'submitting', step: 'Setting margin mode…' })
+      try {
+        await changeMarginMode(symbol, marginMode, marginCoin)
+      } catch {
+        // Margin mode can't change with an open position/order — ignore.
+      }
+
+      setSubmit({ kind: 'submitting', step: 'Setting leverage…' })
+      await changeLeverage(symbol, leverage, marginCoin)
+
+      const legs = [
+        { leg: straddle.long, proj: longProj, orderSide: 'BUY' as const, label: 'LONG' },
+        { leg: straddle.short, proj: shortProj, orderSide: 'SELL' as const, label: 'SHORT' },
+      ]
+      for (let i = 0; i < legs.length; i++) {
+        const { leg, proj, orderSide, label } = legs[i]
+        if (!leg || proj.qty <= 0) continue
+        setSubmit({ kind: 'submitting', step: `Placing ${label} leg ${i + 1}/${legs.length}…` })
+        const params: PlaceOrderParams = {
+          symbol,
+          side: orderSide,
+          orderType: 'MARKET',
+          effect: 'GTC',
+          qty: String(proj.qty),
+          tpPrice: String(roundToPrecision(leg.tp, spec.quotePrecision)),
+          tpStopType: 'LAST_PRICE',
+          tpOrderType: 'MARKET',
+          slPrice: String(roundToPrecision(leg.stop, spec.quotePrecision)),
+          slStopType: 'LAST_PRICE',
+          slOrderType: 'MARKET',
+        }
+        if (hedge) params.tradeSide = 'OPEN'
+        const res = await placeOrder(params)
+        if (res?.orderId) orderIds.push(res.orderId)
+      }
+      setSubmit({ kind: 'done', orderIds })
+    } catch (e) {
+      setSubmit({ kind: 'error', message: e instanceof Error ? e.message : String(e), orderIds })
+    }
+  }
+
   function resetPrices() {
     editedRef.current = { entry: false, stop: false, tp1: false, tp2: false }
     const q = spec.quotePrecision
@@ -203,23 +333,44 @@ export function OrderTicket({
       title="Order ticket"
       subtitle="Size the trade, project P&L, and open the position"
       actions={
-        <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
-          {(['LONG', 'SHORT'] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => onSideChange(s)}
-              className={clsx(
-                'rounded-md px-3 py-1 text-xs font-semibold',
-                side === s
-                  ? s === 'LONG'
-                    ? 'bg-emerald-500 text-zinc-950'
-                    : 'bg-rose-500 text-zinc-950'
-                  : 'text-zinc-400 hover:text-zinc-200',
-              )}
-            >
-              {s}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+            {([
+              ['single', 'Single'],
+              ['both', 'Both'],
+            ] as const).map(([m, label]) => (
+              <button
+                key={m}
+                onClick={() => onTradeModeChange(m)}
+                className={clsx(
+                  'rounded-md px-3 py-1 text-xs font-semibold',
+                  tradeMode === m ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {!both && (
+            <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+              {(['LONG', 'SHORT'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => onSideChange(s)}
+                  className={clsx(
+                    'rounded-md px-3 py-1 text-xs font-semibold',
+                    side === s
+                      ? s === 'LONG'
+                        ? 'bg-emerald-500 text-zinc-950'
+                        : 'bg-rose-500 text-zinc-950'
+                      : 'text-zinc-400 hover:text-zinc-200',
+                  )}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       }
     >
@@ -299,26 +450,28 @@ export function OrderTicket({
           </div>
 
           {/* Order type */}
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] uppercase tracking-wide text-zinc-500">Order</span>
-            <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
-              {(['LIMIT', 'MARKET'] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setOrderType(t)}
-                  className={clsx(
-                    'rounded-md px-2.5 py-1 text-xs font-medium',
-                    orderType === t ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200',
-                  )}
-                >
-                  {t === 'LIMIT' ? 'Limit' : 'Market'}
-                </button>
-              ))}
+          {!both && (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] uppercase tracking-wide text-zinc-500">Order</span>
+              <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+                {(['LIMIT', 'MARKET'] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setOrderType(t)}
+                    className={clsx(
+                      'rounded-md px-2.5 py-1 text-xs font-medium',
+                      orderType === t ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200',
+                    )}
+                  >
+                    {t === 'LIMIT' ? 'Limit' : 'Market'}
+                  </button>
+                ))}
+              </div>
+              <button onClick={resetPrices} className="ml-auto text-[11px] text-cyan-400 hover:underline">
+                reset to setup
+              </button>
             </div>
-            <button onClick={resetPrices} className="ml-auto text-[11px] text-cyan-400 hover:underline">
-              reset to setup
-            </button>
-          </div>
+          )}
 
           {/* Margin mode */}
           <div className="flex items-center gap-2">
@@ -339,102 +492,133 @@ export function OrderTicket({
             </div>
           </div>
 
-          {/* Prices */}
-          <div className="grid grid-cols-2 gap-2">
-            <PriceInput
-              label={orderType === 'MARKET' ? 'Entry (market)' : 'Entry'}
-              value={orderType === 'MARKET' ? String(roundToPrecision(currentPrice, spec.quotePrecision)) : entry}
-              onChange={editPrice('entry', setEntry)}
-              disabled={orderType === 'MARKET'}
-            />
-            <PriceInput label="Stop loss" value={stop} onChange={editPrice('stop', setStop)} tone="down" />
-            <PriceInput label="TP1" value={tp1} onChange={editPrice('tp1', setTp1)} tone="up" />
-            <PriceInput label="TP2" value={tp2} onChange={editPrice('tp2', setTp2)} tone="up" />
-          </div>
-
-          {/* TP selector */}
-          <div>
-            <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">Take profit</div>
-            <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
-              {([
-                ['TP1', 'TP1 only'],
-                ['TP2', 'TP2 only'],
-                ['BOTH', 'Both'],
-              ] as const).map(([m, label]) => (
-                <button
-                  key={m}
-                  onClick={() => setTpMode(m)}
-                  className={clsx(
-                    'flex-1 rounded-md px-2 py-1 text-xs font-medium',
-                    tpMode === m ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200',
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
+          {/* Prices (single mode) */}
+          {!both && (
+            <div className="grid grid-cols-2 gap-2">
+              <PriceInput
+                label={orderType === 'MARKET' ? 'Entry (market)' : 'Entry'}
+                value={orderType === 'MARKET' ? String(roundToPrecision(currentPrice, spec.quotePrecision)) : entry}
+                onChange={editPrice('entry', setEntry)}
+                disabled={orderType === 'MARKET'}
+              />
+              <PriceInput label="Stop loss" value={stop} onChange={editPrice('stop', setStop)} tone="down" />
+              <PriceInput label="TP1" value={tp1} onChange={editPrice('tp1', setTp1)} tone="up" />
+              <PriceInput label="TP2" value={tp2} onChange={editPrice('tp2', setTp2)} tone="up" />
             </div>
-            {tpMode === 'BOTH' && (
-              <div className="mt-2">
-                <div className="mb-1 flex justify-between text-[10px] text-zinc-500">
-                  <span>TP1 {Math.round(split * 100)}%</span>
-                  <span>TP2 {Math.round((1 - split) * 100)}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={10}
-                  max={90}
-                  step={5}
-                  value={Math.round(split * 100)}
-                  onChange={(e) => setSplit(Number(e.target.value) / 100)}
-                  className="w-full accent-cyan-400"
-                />
+          )}
+
+          {/* TP selector (single mode) */}
+          {!both && (
+            <div>
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">Take profit</div>
+              <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+                {([
+                  ['TP1', 'TP1 only'],
+                  ['TP2', 'TP2 only'],
+                  ['BOTH', 'Both'],
+                ] as const).map(([m, label]) => (
+                  <button
+                    key={m}
+                    onClick={() => setTpMode(m)}
+                    className={clsx(
+                      'flex-1 rounded-md px-2 py-1 text-xs font-medium',
+                      tpMode === m ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
+              {tpMode === 'BOTH' && (
+                <div className="mt-2">
+                  <div className="mb-1 flex justify-between text-[10px] text-zinc-500">
+                    <span>TP1 {Math.round(split * 100)}%</span>
+                    <span>TP2 {Math.round((1 - split) * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={10}
+                    max={90}
+                    step={5}
+                    value={Math.round(split * 100)}
+                    onChange={(e) => setSplit(Number(e.target.value) / 100)}
+                    className="w-full accent-cyan-400"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Straddle legs (both mode) */}
+          {both && (
+            <StraddleInputs straddle={straddle} split={straddleSplit} onSplitChange={setStraddleSplit} />
+          )}
         </div>
 
         {/* Projection */}
         <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-2">
-            <Stat label="Position size" value={`${fmtCompact(projection.qty, 4)} ${spec.symbol.replace(/USDT$/, '')}`} />
-            <Stat label="Notional" value={`$${fmtCompact(projection.notional)}`} />
-            <Stat label="Est. liq. price" value={fmtPrice(projection.liqPrice)} tone="down" />
-            <Stat label="R:R" value={projection.rr ? projection.rr.toFixed(2) : '—'} />
-          </div>
+          {!both && (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <Stat label="Position size" value={`${fmtCompact(projection.qty, 4)} ${spec.symbol.replace(/USDT$/, '')}`} />
+                <Stat label="Notional" value={`$${fmtCompact(projection.notional)}`} />
+                <Stat label="Est. liq. price" value={fmtPrice(projection.liqPrice)} tone="down" />
+                <Stat label="R:R" value={projection.rr ? projection.rr.toFixed(2) : '—'} />
+              </div>
 
-          <div className="rounded-lg border border-zinc-800 p-3">
-            <div className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Projected P&amp;L</div>
-            <div className="flex flex-col gap-1.5 text-sm">
-              {projection.legs.map((leg) => (
-                <div key={leg.label} className="flex items-center justify-between">
-                  <span className="text-zinc-400">
-                    {leg.label} @ {fmtPrice(leg.tp)} · {fmtCompact(leg.qty, 4)}
-                  </span>
-                  <span className={pnlColor(leg.profit)}>+{fmtUsd(leg.profit)}</span>
+              <div className="rounded-lg border border-zinc-800 p-3">
+                <div className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Projected P&amp;L</div>
+                <div className="flex flex-col gap-1.5 text-sm">
+                  {projection.legs.map((leg) => (
+                    <div key={leg.label} className="flex items-center justify-between">
+                      <span className="text-zinc-400">
+                        {leg.label} @ {fmtPrice(leg.tp)} · {fmtCompact(leg.qty, 4)}
+                      </span>
+                      <span className={pnlColor(leg.profit)}>+{fmtUsd(leg.profit)}</span>
+                    </div>
+                  ))}
+                  <div className="my-1 h-px bg-zinc-800" />
+                  <div className="flex items-center justify-between font-medium">
+                    <span className="text-zinc-300">Total at TP</span>
+                    <span className={pnlColor(projection.profitTotal)}>
+                      +{fmtUsd(projection.profitTotal)} ({projection.profitRoiPct.toFixed(1)}%)
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between font-medium">
+                    <span className="text-zinc-300">At stop loss</span>
+                    <span className="text-rose-400">
+                      {fmtUsd(projection.lossPnl)} ({projection.lossRoiPct.toFixed(1)}%)
+                    </span>
+                  </div>
                 </div>
-              ))}
-              <div className="my-1 h-px bg-zinc-800" />
-              <div className="flex items-center justify-between font-medium">
-                <span className="text-zinc-300">Total at TP</span>
-                <span className={pnlColor(projection.profitTotal)}>
-                  +{fmtUsd(projection.profitTotal)} ({projection.profitRoiPct.toFixed(1)}%)
-                </span>
               </div>
-              <div className="flex items-center justify-between font-medium">
-                <span className="text-zinc-300">At stop loss</span>
-                <span className="text-rose-400">
-                  {fmtUsd(projection.lossPnl)} ({projection.lossRoiPct.toFixed(1)}%)
-                </span>
-              </div>
-            </div>
-          </div>
+            </>
+          )}
 
-          {projection.warnings.map((w, i) => (
+          {both && (
+            <StraddleProjection
+              straddle={straddle}
+              longProj={longProj}
+              shortProj={shortProj}
+              bestCase={straddleBestCase}
+              worstCase={straddleWorstCase}
+              breakoutUp={breakoutUp}
+              breakoutDown={breakoutDown}
+              baseSymbol={spec.symbol.replace(/USDT$/, '')}
+            />
+          )}
+
+          {(both ? straddleWarnings : projection.warnings).map((w, i) => (
             <p key={`w${i}`} className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{w}</p>
           ))}
-          {projection.notices.map((n, i) => (
+          {(both ? straddleNotices : projection.notices).map((n, i) => (
             <p key={`n${i}`} className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">{n}</p>
           ))}
+          {both && !straddle.valid && (
+            <p className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+              {straddle.note ?? 'This range straddle did not pass validation.'} You can still open it — higher risk.
+            </p>
+          )}
 
           {!hasKeys && (
             <p className="text-xs text-zinc-500">Connect your API key in Settings to enable trading.</p>
@@ -446,21 +630,41 @@ export function OrderTicket({
           )}
 
           <p className="text-[11px] text-zinc-500">
-            Orders open in Hedge mode (set automatically). For multiple same-direction positions per
-            pair, enable <span className="text-zinc-300">Multi-Trade</span> once in the Bitunix app —
-            it isn't available through the API.
+            Orders open in Hedge mode (set automatically).
+            {both
+              ? ' Both legs are MARKET orders opened at once; the long targets the resistance and the short targets the support.'
+              : ' For multiple same-direction positions per pair, enable '}
+            {!both && <span className="text-zinc-300">Multi-Trade</span>}
+            {!both && " once in the Bitunix app — it isn't available through the API."}
           </p>
 
-          <button
-            onClick={() => setShowConfirm(true)}
-            disabled={!canSubmit}
-            className={clsx(
-              'rounded-lg px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40',
-              side === 'LONG' ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400' : 'bg-rose-500 text-zinc-950 hover:bg-rose-400',
-            )}
-          >
-            {submit.kind === 'submitting' ? submit.step : `Open ${side} on ${symbol}`}
-          </button>
+          {both ? (
+            <button
+              onClick={() => setShowConfirm(true)}
+              disabled={!canSubmitStraddle}
+              className={clsx(
+                'rounded-lg px-4 py-2.5 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40',
+                straddle.valid ? 'bg-cyan-500 hover:bg-cyan-400' : 'bg-amber-500 hover:bg-amber-400',
+              )}
+            >
+              {submit.kind === 'submitting'
+                ? submit.step
+                : straddle.valid
+                  ? `Open BOTH on ${symbol}`
+                  : `Open BOTH anyway on ${symbol}`}
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowConfirm(true)}
+              disabled={!canSubmit}
+              className={clsx(
+                'rounded-lg px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40',
+                side === 'LONG' ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400' : 'bg-rose-500 text-zinc-950 hover:bg-rose-400',
+              )}
+            >
+              {submit.kind === 'submitting' ? submit.step : `Open ${side} on ${symbol}`}
+            </button>
+          )}
 
           {submit.kind === 'done' && (
             <div className="rounded-md bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
@@ -476,7 +680,7 @@ export function OrderTicket({
         </div>
       </div>
 
-      {showConfirm && (
+      {showConfirm && !both && (
         <ConfirmModal
           symbol={symbol}
           side={side}
@@ -488,6 +692,22 @@ export function OrderTicket({
           projection={projection}
           onCancel={() => setShowConfirm(false)}
           onConfirm={doSubmit}
+        />
+      )}
+      {showConfirm && both && longProj && shortProj && (
+        <StraddleConfirmModal
+          symbol={symbol}
+          marginMode={marginMode}
+          leverage={leverage}
+          margin={toNum(margin)}
+          marginCoin={marginCoin}
+          straddle={straddle}
+          longProj={longProj}
+          shortProj={shortProj}
+          bestCase={straddleBestCase}
+          worstCase={straddleWorstCase}
+          onCancel={() => setShowConfirm(false)}
+          onConfirm={doSubmitStraddle}
         />
       )}
     </Panel>
@@ -638,6 +858,260 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between rounded-md bg-zinc-800/30 px-2 py-1">
       <span className="text-zinc-500">{label}</span>
       <span className="tabular font-medium text-zinc-200">{value}</span>
+    </div>
+  )
+}
+
+function LegCard({ label, tone, leg }: { label: string; tone: 'up' | 'down'; leg: RangeStraddleLeg | null }) {
+  return (
+    <div className="rounded-lg border border-zinc-800 p-2.5">
+      <div className={clsx('mb-1 text-xs font-semibold', tone === 'up' ? 'text-emerald-400' : 'text-rose-400')}>
+        {label}
+      </div>
+      {leg ? (
+        <div className="flex flex-col gap-0.5 text-[11px] text-zinc-400">
+          <div className="flex justify-between">
+            <span>Entry (mkt)</span>
+            <span className="tabular text-zinc-200">{fmtPrice(leg.entry)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>TP</span>
+            <span className="tabular text-emerald-300">{fmtPrice(leg.tp)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Stop</span>
+            <span className="tabular text-rose-300">{fmtPrice(leg.stop)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>R:R</span>
+            <span className="tabular text-zinc-200">{leg.rr.toFixed(2)}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="text-[11px] text-zinc-600">n/a</div>
+      )}
+    </div>
+  )
+}
+
+function StraddleInputs({
+  straddle,
+  split,
+  onSplitChange,
+}: {
+  straddle: RangeStraddlePlan
+  split: number
+  onSplitChange: (v: number) => void
+}) {
+  const { support, resistance, long, short } = straddle
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-lg border border-zinc-800 p-3">
+        <div className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">
+          Range straddle · both legs open at market
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-zinc-500">Resistance</span>
+            <span className="tabular text-rose-300">{resistance ? fmtPrice(resistance.price) : '—'}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-zinc-500">Support</span>
+            <span className="tabular text-emerald-300">{support ? fmtPrice(support.price) : '—'}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <LegCard label="LONG → resistance" tone="up" leg={long} />
+        <LegCard label="SHORT → support" tone="down" leg={short} />
+      </div>
+
+      <div>
+        <div className="mb-1 flex justify-between text-[10px] text-zinc-500">
+          <span>LONG margin {Math.round(split * 100)}%</span>
+          <span>SHORT margin {Math.round((1 - split) * 100)}%</span>
+        </div>
+        <input
+          type="range"
+          min={10}
+          max={90}
+          step={5}
+          value={Math.round(split * 100)}
+          onChange={(e) => onSplitChange(Number(e.target.value) / 100)}
+          className="w-full accent-cyan-400"
+        />
+      </div>
+    </div>
+  )
+}
+
+function StraddleProjection({
+  straddle,
+  longProj,
+  shortProj,
+  bestCase,
+  worstCase,
+  breakoutUp,
+  breakoutDown,
+  baseSymbol,
+}: {
+  straddle: RangeStraddlePlan
+  longProj: OrderProjection | null
+  shortProj: OrderProjection | null
+  bestCase: number
+  worstCase: number
+  breakoutUp: number
+  breakoutDown: number
+  baseSymbol: string
+}) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2">
+        <Stat label="Long size" value={`${fmtCompact(longProj?.qty ?? 0, 4)} ${baseSymbol}`} tone="up" />
+        <Stat label="Short size" value={`${fmtCompact(shortProj?.qty ?? 0, 4)} ${baseSymbol}`} tone="down" />
+        <Stat label="Long liq." value={fmtPrice(longProj?.liqPrice ?? 0)} tone="down" />
+        <Stat label="Short liq." value={fmtPrice(shortProj?.liqPrice ?? 0)} tone="down" />
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 p-3">
+        <div className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Projected P&amp;L</div>
+        <div className="flex flex-col gap-1.5 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400">
+              Range holds · both TP {straddle.bestCaseR ? `(${straddle.bestCaseR.toFixed(2)}R)` : ''}
+            </span>
+            <span className={pnlColor(bestCase)}>+{fmtUsd(bestCase)}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400">Breaks up · long TP, short stop</span>
+            <span className={pnlColor(breakoutUp)}>{fmtUsd(breakoutUp)}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400">Breaks down · short TP, long stop</span>
+            <span className={pnlColor(breakoutDown)}>{fmtUsd(breakoutDown)}</span>
+          </div>
+          <div className="my-1 h-px bg-zinc-800" />
+          <div className="flex items-center justify-between font-medium">
+            <span className="text-zinc-300">Worst-case breakout</span>
+            <span className={pnlColor(worstCase)}>{fmtUsd(worstCase)}</span>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function StraddleConfirmModal({
+  symbol,
+  marginMode,
+  leverage,
+  margin,
+  marginCoin,
+  straddle,
+  longProj,
+  shortProj,
+  bestCase,
+  worstCase,
+  onCancel,
+  onConfirm,
+}: {
+  symbol: string
+  marginMode: 'CROSS' | 'ISOLATION'
+  leverage: number
+  margin: number
+  marginCoin: string
+  straddle: RangeStraddlePlan
+  longProj: OrderProjection
+  shortProj: OrderProjection
+  bestCase: number
+  worstCase: number
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div
+        className="w-full max-w-md rounded-xl border border-zinc-700 bg-[#0c111b] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-base font-semibold text-zinc-100">Confirm range straddle · {symbol}</h3>
+        <p className="mt-1 text-xs text-amber-300/80">
+          This opens TWO real market positions on Bitunix futures ({marginMode === 'CROSS' ? 'cross' : 'isolated'}{' '}
+          {leverage}x, hedge mode): a LONG targeting resistance and a SHORT targeting support.
+        </p>
+        {!straddle.valid && (
+          <p className="mt-2 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+            Warning: {straddle.note ?? 'this setup did not pass validation'} — opening anyway is higher risk.
+          </p>
+        )}
+
+        <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+          <Row label="Margin mode" value={marginMode === 'CROSS' ? 'Cross' : 'Isolated'} />
+          <Row label="Leverage" value={`${leverage}x`} />
+          <Row label="Margin" value={`${fmtUsd(margin)} ${marginCoin}`} />
+          <Row label="Range R:R" value={straddle.bestCaseR ? straddle.bestCaseR.toFixed(2) : '—'} />
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-lg border border-zinc-800 p-2">
+            <div className="mb-1 font-semibold text-emerald-400">LONG</div>
+            <div className="flex justify-between text-zinc-400">
+              <span>Size</span>
+              <span className="tabular text-zinc-200">{fmtCompact(longProj.qty, 4)}</span>
+            </div>
+            <div className="flex justify-between text-zinc-400">
+              <span>TP</span>
+              <span className="tabular text-emerald-300">{fmtPrice(straddle.long?.tp ?? 0)}</span>
+            </div>
+            <div className="flex justify-between text-zinc-400">
+              <span>Stop</span>
+              <span className="tabular text-rose-300">{fmtPrice(straddle.long?.stop ?? 0)}</span>
+            </div>
+          </div>
+          <div className="rounded-lg border border-zinc-800 p-2">
+            <div className="mb-1 font-semibold text-rose-400">SHORT</div>
+            <div className="flex justify-between text-zinc-400">
+              <span>Size</span>
+              <span className="tabular text-zinc-200">{fmtCompact(shortProj.qty, 4)}</span>
+            </div>
+            <div className="flex justify-between text-zinc-400">
+              <span>TP</span>
+              <span className="tabular text-emerald-300">{fmtPrice(straddle.short?.tp ?? 0)}</span>
+            </div>
+            <div className="flex justify-between text-zinc-400">
+              <span>Stop</span>
+              <span className="tabular text-rose-300">{fmtPrice(straddle.short?.stop ?? 0)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-zinc-800 p-2 text-xs">
+          <div className="flex justify-between">
+            <span className="text-zinc-400">If range holds (both TP)</span>
+            <span className="text-emerald-400">+{fmtUsd(bestCase)}</span>
+          </div>
+          <div className="mt-1 flex justify-between border-t border-zinc-800 pt-1 font-medium">
+            <span className="text-zinc-300">Worst-case breakout</span>
+            <span className={pnlColor(worstCase)}>{fmtUsd(worstCase)}</span>
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-cyan-400"
+          >
+            Confirm both
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

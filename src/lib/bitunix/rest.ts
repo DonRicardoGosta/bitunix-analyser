@@ -16,9 +16,11 @@ import type {
   KlineRaw,
   LeverageMarginMode,
   MarginMode,
+  ModifyTpslOrderParams,
   OrderResult,
   PendingPositionRaw,
   PlaceOrderParams,
+  PositionTpslParams,
   TickerRaw,
   TpslOrderRaw,
   TradingPairRaw,
@@ -259,6 +261,19 @@ export function getTpslPending(symbol?: string): Promise<TpslOrderRaw[]> {
     '/api/v1/futures/tpsl/get_pending_orders',
     symbol ? { symbol } : undefined,
   )
+}
+
+/** Modify an existing standalone TP/SL trigger order (e.g. move the stop). */
+export function modifyTpslOrder(params: ModifyTpslOrderParams): Promise<{ orderId: string }> {
+  return privatePost<{ orderId: string }>('/api/v1/futures/tpsl/modify_order', { ...params })
+}
+
+/**
+ * Place/replace the position-wide TP/SL (closes the whole position at market
+ * when triggered). Used as a fallback when a position has no existing SL order.
+ */
+export function placePositionTpsl(params: PositionTpslParams): Promise<{ orderId: string }> {
+  return privatePost<{ orderId: string }>('/api/v1/futures/tpsl/position/place_order', { ...params })
 }
 
 /** Close an open position at market by its position id. */

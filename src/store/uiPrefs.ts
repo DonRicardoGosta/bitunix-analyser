@@ -9,6 +9,8 @@ export type StatsMode = 'preset' | 'custom'
 export type OrderType = 'LIMIT' | 'MARKET'
 export type MarginMode = 'CROSS' | 'ISOLATION'
 export type TpMode = 'TP1' | 'TP2' | 'BOTH'
+/** 'single' = one-sided LONG/SHORT, 'both' = range straddle (both directions). */
+export type TradeMode = 'single' | 'both'
 
 interface StatsRange {
   statsMode: StatsMode
@@ -27,6 +29,10 @@ interface TicketPrefs {
   ticketMarginMode: MarginMode
   ticketTpMode: TpMode
   ticketSplit: number
+  /** Single one-sided trade vs. both-directions range straddle. */
+  ticketTradeMode: TradeMode
+  /** Fraction (0..1) of margin allocated to the LONG leg of a straddle. */
+  ticketStraddleSplit: number
 }
 
 interface UiPrefsState extends StatsRange, TicketPrefs {
@@ -53,6 +59,8 @@ export const useUiPrefs = create<UiPrefsState>()(
       ticketMarginMode: 'CROSS',
       ticketTpMode: 'TP1',
       ticketSplit: 0.5,
+      ticketTradeMode: 'single',
+      ticketStraddleSplit: 0.5,
       setTicket: (p) => set((s) => ({ ...s, ...p })),
     }),
     { name: 'bitunix-ui-prefs' },

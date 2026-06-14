@@ -18,10 +18,14 @@ import {
   type Regime,
 } from './signal'
 import { backtestSignal, type BacktestStats } from './backtest'
+import { backtestRangeReversal } from './rangeBacktest'
+import { buildRangeStraddle, type RangeStraddlePlan } from './straddle'
 import { BACKTEST, HTF, MAX_TOTAL_WEIGHT, PLAN, WEIGHTS } from './config'
 
 export type { FactorScore, Regime } from './signal'
 export type { BacktestStats } from './backtest'
+export type { RangeBacktestStats } from './rangeBacktest'
+export type { RangeStraddlePlan, RangeStraddleLeg } from './straddle'
 
 // ---- Public types ----
 
@@ -74,6 +78,8 @@ export interface SetupResult {
   levels: KeyLevel[]
   long: TradePlan
   short: TradePlan
+  /** Both-directions range straddle at strong levels (check `.valid` before use). */
+  straddle: RangeStraddlePlan
   backtest: BacktestStats | null
   hasLiquidity: boolean
   hasDerivatives: boolean
@@ -548,6 +554,10 @@ export function buildSetup(input: SetupInput): SetupResult | null {
   const long = buildPlan('LONG', price, levels, atr, bias, regime, htfValue, bullReasons)
   const short = buildPlan('SHORT', price, levels, atr, bias, regime, htfValue, bearReasons)
 
+  // Both-directions range straddle, validated by a range-reversal backtest.
+  const rangeBacktest = backtestRangeReversal(candles)
+  const straddle = buildRangeStraddle({ price, levels, atr, regime, backtest: rangeBacktest })
+
   // Historical validation of the candle-derived signal.
   const backtest = backtestSignal(candles)
 
@@ -570,6 +580,7 @@ export function buildSetup(input: SetupInput): SetupResult | null {
     levels,
     long,
     short,
+    straddle,
     backtest,
     hasLiquidity: Boolean(book),
     hasDerivatives: Boolean(derivatives && (derivatives.oi?.length || derivatives.taker?.length || derivatives.longShort?.length)),

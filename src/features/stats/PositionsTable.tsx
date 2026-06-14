@@ -1,28 +1,51 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
-import type { PendingPositionRaw } from '../../lib/bitunix/types'
+import type { PendingPositionRaw, TpslOrderRaw } from '../../lib/bitunix/types'
 import { useTickers } from '../../store/tickers'
 import { useCredentials } from '../../store/credentials'
-import { flashClosePosition } from '../../lib/bitunix/rest'
+import { flashClosePosition, modifyTpslOrder, placePositionTpsl } from '../../lib/bitunix/rest'
+import { roundToPrecision } from '../analysis/setup/order'
 import { Badge, EmptyState } from '../../components/ui/primitives'
 import { fmtPrice, fmtSignedUsd, pnlColor, toNum } from '../../lib/format'
 import { positionOutcome, type PositionTpsl } from './positions'
 import type { PositionReview } from './review'
+import type { StopSuggestion } from './stopSuggest'
+
+interface TightenTarget {
+  position: PendingPositionRaw
+  suggestion: StopSuggestion
+}
+
+function decimalsOf(v: string | number | undefined): number {
+  if (v === undefined) return 2
+  const s = String(v)
+  const i = s.indexOf('.')
+  return i === -1 ? 0 : Math.min(s.length - i - 1, 10)
+}
+
+function normalizeStopType(v: string | undefined): 'MARK_PRICE' | 'LAST_PRICE' {
+  return v === 'MARK_PRICE' ? 'MARK_PRICE' : 'LAST_PRICE'
+}
 
 export function PositionsTable({
   positions,
   tpslMap,
   reviews,
+  stopSuggestions,
+  slOrders,
 }: {
   positions: PendingPositionRaw[]
   tpslMap: Record<string, PositionTpsl>
   reviews?: Record<string, PositionReview>
+  stopSuggestions?: Record<string, StopSuggestion | null>
+  slOrders?: Record<string, TpslOrderRaw>
 }) {
   const tickers = useTickers((s) => s.map)
   const hasKeys = useCredentials((s) => s.hasKeys())
   const qc = useQueryClient()
   const [confirm, setConfirm] = useState<PendingPositionRaw | null>(null)
+  const [tighten, setTighten] = useState<TightenTarget | null>(null)
 
   const closeMut = useMutation({
     mutationFn: (positionId: string) => flashClosePosition(positionId),
@@ -31,6 +54,41 @@ export function PositionsTable({
       qc.invalidateQueries({ queryKey: ['positionTpsl'] })
       qc.invalidateQueries({ queryKey: ['account'] })
       setConfirm(null)
+    },
+  })
+
+  const tightenMut = useMutation({
+    mutationFn: async ({ position, suggestion }: TightenTarget) => {
+      const slOrder = slOrders?.[position.positionId]
+      const dec = decimalsOf(slOrder?.slPrice ?? position.avgOpenPrice)
+      const slPrice = String(roundToPrecision(suggestion.price, dec))
+      if (slOrder) {
+        await modifyTpslOrder({
+          orderId: slOrder.id,
+          slPrice,
+          slStopType: normalizeStopType(slOrder.slStopType),
+          slQty: slOrder.slQty || position.qty,
+          ...(toNum(slOrder.tpPrice, 0) > 0
+            ? {
+                tpPrice: slOrder.tpPrice,
+                tpStopType: normalizeStopType(slOrder.tpStopType),
+                tpQty: slOrder.tpQty || position.qty,
+              }
+            : {}),
+        })
+      } else {
+        await placePositionTpsl({
+          symbol: position.symbol,
+          positionId: position.positionId,
+          slPrice,
+          slStopType: 'LAST_PRICE',
+        })
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['positionTpsl'] })
+      qc.invalidateQueries({ queryKey: ['pendingPositions'] })
+      setTighten(null)
     },
   })
 
@@ -64,7 +122,9 @@ export function PositionsTable({
             const upnl = toNum(p.unrealizedPNL)
             const o = positionOutcome(p, tpslMap[p.positionId], mark)
             const review = reviews?.[p.positionId]
+            const suggestion = stopSuggestions?.[p.positionId] ?? null
             const closing = closeMut.isPending && closeMut.variables === p.positionId
+            const tightening = tightenMut.isPending && tightenMut.variables?.position.positionId === p.positionId
             return (
               <tr key={p.positionId} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
                 <td className="px-2 py-2 font-medium text-zinc-100">{p.symbol}</td>
@@ -87,7 +147,17 @@ export function PositionsTable({
                   {o.tpPrice !== null ? fmtPrice(o.tpPrice) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular text-rose-300/80">
-                  {o.slPrice !== null ? fmtPrice(o.slPrice) : '—'}
+                  <span className="inline-flex items-center justify-end gap-1">
+                    {o.slPrice !== null ? fmtPrice(o.slPrice) : '—'}
+                    {suggestion && (
+                      <span
+                        title={`Stop is ${suggestion.currentDistAtr.toFixed(1)}× ATR away — far from price`}
+                        className="text-amber-400"
+                      >
+                        ⚠
+                      </span>
+                    )}
+                  </span>
                 </td>
                 <td className="px-2 py-2 text-right tabular text-amber-300/80">
                   {liq > 0 ? fmtPrice(liq) : '—'}
@@ -95,13 +165,25 @@ export function PositionsTable({
                 <td className="px-2 py-2 text-right tabular text-zinc-400">{p.leverage}x</td>
                 <td className={clsx('px-2 py-2 text-right tabular', pnlColor(upnl))}>{fmtSignedUsd(upnl)}</td>
                 <td className="px-2 py-2 text-right">
-                  <button
-                    onClick={() => setConfirm(p)}
-                    disabled={!hasKeys || closing}
-                    className="rounded-md border border-rose-500/40 px-2.5 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-40"
-                  >
-                    {closing ? 'Closing…' : 'Close'}
-                  </button>
+                  <div className="flex items-center justify-end gap-1.5">
+                    {suggestion && (
+                      <button
+                        onClick={() => setTighten({ position: p, suggestion })}
+                        disabled={!hasKeys || tightening}
+                        title={`Pull stop to ${fmtPrice(suggestion.price)} — ${suggestion.reason}`}
+                        className="rounded-md border border-amber-500/40 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/10 disabled:opacity-40"
+                      >
+                        {tightening ? 'Moving…' : 'Tighten SL'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setConfirm(p)}
+                      disabled={!hasKeys || closing}
+                      className="rounded-md border border-rose-500/40 px-2.5 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-40"
+                    >
+                      {closing ? 'Closing…' : 'Close'}
+                    </button>
+                  </div>
                 </td>
               </tr>
             )
@@ -112,6 +194,11 @@ export function PositionsTable({
       {closeMut.isError && (
         <div className="mt-2 rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
           {closeMut.error instanceof Error ? closeMut.error.message : 'Failed to close position'}
+        </div>
+      )}
+      {tightenMut.isError && (
+        <div className="mt-2 rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+          {tightenMut.error instanceof Error ? tightenMut.error.message : 'Failed to modify stop-loss'}
         </div>
       )}
 
@@ -146,6 +233,82 @@ export function PositionsTable({
           </div>
         </div>
       )}
+
+      {tighten && (
+        <TightenModal
+          target={tighten}
+          mark={tickers[tighten.position.symbol]?.last ?? toNum(tighten.position.avgOpenPrice)}
+          currentSl={positionOutcome(tighten.position, tpslMap[tighten.position.positionId], tickers[tighten.position.symbol]?.last ?? toNum(tighten.position.avgOpenPrice)).slPrice}
+          pending={tightenMut.isPending}
+          onCancel={() => setTighten(null)}
+          onConfirm={() => tightenMut.mutate(tighten)}
+        />
+      )}
+    </div>
+  )
+}
+
+function TightenModal({
+  target,
+  mark,
+  currentSl,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  target: TightenTarget
+  mark: number
+  currentSl: number | null
+  pending: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const { position: p, suggestion } = target
+  const entry = toNum(p.avgOpenPrice)
+  const qty = toNum(p.qty)
+  // The protective stop sits below price for a long and above it for a short,
+  // so the suggested side is self-consistent regardless of API side labelling.
+  const isLong = suggestion.price < mark
+  const pnlAt = (price: number) => (isLong ? qty * (price - entry) : qty * (entry - price))
+  const curLoss = currentSl !== null ? pnlAt(currentSl) : null
+  const newLoss = pnlAt(suggestion.price)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div className="w-full max-w-sm rounded-xl border border-zinc-700 bg-[#0c111b] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-base font-semibold text-zinc-100">Tighten stop · {p.side} {p.symbol}</h3>
+        <p className="mt-1 text-xs text-zinc-400">
+          Moves the stop-loss closer to price — {suggestion.reason}. Nothing else about the position changes.
+        </p>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+          <Row label="Mark" value={fmtPrice(mark)} />
+          <Row label="Entry" value={fmtPrice(entry)} />
+          <Row label="Current SL" value={currentSl !== null ? fmtPrice(currentSl) : '—'} />
+          <Row label="New SL" value={fmtPrice(suggestion.price)} />
+          <Row label="Distance now" value={`${suggestion.currentDistAtr.toFixed(1)}× ATR`} />
+          <Row label="Distance new" value={`${suggestion.newDistAtr.toFixed(1)}× ATR`} />
+          {curLoss !== null && <Row label="Risk now" value={fmtSignedUsd(curLoss)} />}
+          <Row label="Risk new" value={fmtSignedUsd(newLoss)} />
+        </div>
+        <p className="mt-3 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+          Caps the loss ~{Math.round(suggestion.riskReductionPct * 100)}% tighter. A closer stop is more likely to be hit by normal swings.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={pending}
+            className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:opacity-50"
+          >
+            {pending ? 'Moving…' : 'Move stop-loss'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

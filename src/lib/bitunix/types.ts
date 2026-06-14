@@ -95,6 +95,31 @@ export interface OrderResult {
   clientId?: string
 }
 
+/** Modify an existing standalone TP/SL trigger order (by its order id). */
+export interface ModifyTpslOrderParams {
+  orderId: string
+  tpPrice?: string
+  tpStopType?: 'MARK_PRICE' | 'LAST_PRICE'
+  tpOrderType?: OrderType
+  tpOrderPrice?: string
+  slPrice?: string
+  slStopType?: 'MARK_PRICE' | 'LAST_PRICE'
+  slOrderType?: OrderType
+  slOrderPrice?: string
+  tpQty?: string
+  slQty?: string
+}
+
+/** Place/replace the position-wide TP/SL (by symbol + positionId). */
+export interface PositionTpslParams {
+  symbol: string
+  positionId: string
+  tpPrice?: string
+  tpStopType?: 'MARK_PRICE' | 'LAST_PRICE'
+  slPrice?: string
+  slStopType?: 'MARK_PRICE' | 'LAST_PRICE'
+}
+
 export interface LeverageMarginMode {
   symbol: string
   marginCoin: string

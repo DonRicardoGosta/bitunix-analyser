@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import clsx from 'clsx'
 import { useMarket } from '../../store/market'
+import { useUiPrefs } from '../../store/uiPrefs'
 import { useAnalysisLive } from '../../store/analysisLive'
 import { INTERVALS } from '../../lib/bitunix/intervals'
 import type { KlineInterval } from '../../lib/bitunix/rest'
+import { applyBestSetup, BEST_SETUP, isBestSetupActive } from './setup/bestSetup'
 import { SymbolPicker } from './SymbolPicker'
 import { FundingWidget } from './FundingWidget'
 import { ChartTab } from './tabs/ChartTab'
@@ -33,6 +35,16 @@ export function AnalysisPage() {
   const priceType = useMarket((s) => s.priceType)
   const setPriceType = useMarket((s) => s.setPriceType)
   const ensureSymbol = useAnalysisLive((s) => s.ensureSymbol)
+
+  const ticketTradeMode = useUiPrefs((s) => s.ticketTradeMode)
+  const ticketTpMode = useUiPrefs((s) => s.ticketTpMode)
+  const reviewInterval = useUiPrefs((s) => s.statsReviewInterval)
+  const bestActive = isBestSetupActive({
+    interval,
+    tradeMode: ticketTradeMode,
+    tpMode: ticketTpMode,
+    reviewInterval,
+  })
 
   const [tab, setTab] = useState<TabKey>('chart')
 
@@ -76,6 +88,19 @@ export function AnalysisPage() {
             </button>
           ))}
         </div>
+
+        <button
+          onClick={applyBestSetup}
+          title={`High win-rate preset — ${BEST_SETUP.interval} analysis · single direction · ${BEST_SETUP.tpMode} · review on ${BEST_SETUP.reviewInterval}`}
+          className={clsx(
+            'rounded-lg border px-2.5 py-1 text-xs font-medium transition',
+            bestActive
+              ? 'border-cyan-400 bg-cyan-500/15 text-cyan-300'
+              : 'border-zinc-700 text-zinc-300 hover:bg-zinc-800',
+          )}
+        >
+          {bestActive ? '\u2713 Best setup' : 'Best setup'}
+        </button>
 
         <div className="ml-auto">
           <FundingWidget symbol={symbol} />
