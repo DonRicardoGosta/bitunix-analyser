@@ -25,7 +25,6 @@ interface UsePriceLineLabelsArgs {
 function createLabelElement(def: PriceLineDef): HTMLDivElement {
   const solid = solidColor(def.color)
   const el = document.createElement('div')
-  el.textContent = `${def.title} ${fmtPrice(def.price)}`
   Object.assign(el.style, {
     position: 'absolute',
     top: '-9999px',
@@ -44,6 +43,20 @@ function createLabelElement(def: PriceLineDef): HTMLDivElement {
     cursor: 'pointer',
     pointerEvents: 'auto',
   } as Partial<CSSStyleDeclaration>)
+  const title = document.createElement('div')
+  title.textContent = `${def.title} ${fmtPrice(def.price)}`
+  el.appendChild(title)
+  if (def.subtitle) {
+    const sub = document.createElement('div')
+    sub.textContent = def.subtitle
+    sub.style.cssText = `
+      margin-top: 1px;
+      font: 500 9px Inter, sans-serif;
+      letter-spacing: normal;
+      color: rgba(148,163,184,0.9);
+    `
+    el.appendChild(sub)
+  }
   return el
 }
 

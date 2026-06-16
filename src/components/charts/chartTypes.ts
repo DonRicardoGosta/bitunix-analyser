@@ -2,6 +2,7 @@ export interface PriceLineDef {
   price: number
   color: string
   title: string
+  subtitle?: string
   dashed?: boolean
   width?: 1 | 2 | 3
 }

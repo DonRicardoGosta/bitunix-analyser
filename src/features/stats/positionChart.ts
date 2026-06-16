@@ -1,7 +1,7 @@
-import type { ParsedPendingPosition } from './positions'
+import { positionPnlAt, type ParsedPendingPosition } from './positions'
 import type { TpslOrderRaw } from '../../lib/bitunix/types'
 import type { PriceLineDef } from '../../components/charts/chartTypes'
-import { toNum } from '../../lib/format'
+import { fmtSignedUsd, toNum } from '../../lib/format'
 
 export interface PositionTpslLevel {
   orderId: string
@@ -79,6 +79,7 @@ export function buildPositionChartLines(
     const isLong = p.side === 'LONG'
     const tag = positions.length > 1 ? `${isLong ? 'L' : 'S'}${pi + 1}` : p.side
     const entry = toNum(p.avgOpenPrice)
+    const posQty = toNum(p.qty)
     const liq = toNum(p.liqPrice)
 
     if (entry > 0) {
@@ -86,33 +87,42 @@ export function buildPositionChartLines(
         price: entry,
         color: isLong ? '#22c55e' : '#ef4444',
         title: `${tag} entry`,
+        subtitle: `uPnL ${fmtSignedUsd(p.unrealizedPNL)}`,
         width: 2,
       })
     }
 
     const { tp, sl } = groupPositionTpslOrders(p.positionId, tpslOrders)
     for (const level of tp) {
+      const qty = level.qty > 0 ? level.qty : posQty
+      const pnl = positionPnlAt(p.side, entry, level.price, qty)
       out.push({
         price: level.price,
         color: '#22d3ee',
         title: levelLabel(tag, 'tp', level.index, tp.length),
+        subtitle: Number.isFinite(pnl) ? fmtSignedUsd(pnl) : undefined,
         dashed: true,
       })
     }
     for (const level of sl) {
+      const qty = level.qty > 0 ? level.qty : posQty
+      const pnl = positionPnlAt(p.side, entry, level.price, qty)
       out.push({
         price: level.price,
         color: '#f43f5e',
         title: levelLabel(tag, 'sl', level.index, sl.length),
+        subtitle: Number.isFinite(pnl) ? fmtSignedUsd(pnl) : undefined,
         dashed: true,
       })
     }
 
     if (liq > 0) {
+      const liqPnl = positionPnlAt(p.side, entry, liq, posQty)
       out.push({
         price: liq,
         color: '#f59e0b',
         title: `${tag} Liq`,
+        subtitle: Number.isFinite(liqPnl) ? fmtSignedUsd(liqPnl) : undefined,
         dashed: true,
       })
     }
