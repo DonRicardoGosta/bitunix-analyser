@@ -14,6 +14,8 @@ import {
   type TpMode,
 } from './order'
 import { registerBuilderShedJobs, ensureBuilderShedPolling, type BuilderShedJobInput } from './builderShed'
+import { registerBuilderDeferredRungs, ensureBuilderDeferredPolling } from './builderDeferred'
+import { builderLimitCanRest, builderShouldDeferRung } from './builderOrders'
 import { useBuilderShedWatcher } from './useBuilderShedWatcher'
 import { useSymbolSpecs } from '../useSymbolSpecs'
 import { useCredentials } from '../../../store/credentials'
@@ -82,7 +84,7 @@ export function OrderTicket({
   const marginCoin = useCredentials((s) => s.marginCoin)
   const hasKeys = useCredentials((s) => s.hasKeys())
   const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
-  const { activeCount: shedActiveCount, failedCount: shedFailedCount } = useBuilderShedWatcher()
+  const { activeCount: shedActiveCount, failedCount: shedFailedCount, deferredCount, deferredFailedCount } = useBuilderShedWatcher()
 
   // Persisted ticket settings (remembered across navigation/reloads).
   const leverage = useUiPrefs((s) => s.ticketLeverage)
@@ -285,11 +287,20 @@ export function OrderTicket({
   }, [isBuilder, builderBudget, builderRungSizings, builderNetQty, builderNetMargin, availableBalance])
 
   const builderNotices = useMemo<string[]>(() => {
-    if (!isBuilder || !builderUsesTrick) return []
-    return [
-      'Some rungs are below the exchange minimum: each opens at the exchange minimum plus your target, then auto-sheds the excess via a market close when the limit fills (hedge mode requires positionId — shed orders cannot be pre-placed).',
-    ]
-  }, [isBuilder, builderUsesTrick])
+    if (!isBuilder) return []
+    const out: string[] = []
+    if (builder.entryStyle === 'momentum') {
+      out.push(
+        'Momentum rungs above (LONG) or below (SHORT) price cannot rest immediately — they are queued and placed as POST_ONLY limits once price moves through each level.',
+      )
+    }
+    if (builderUsesTrick) {
+      out.push(
+        'Some rungs are below the exchange minimum: each opens at the exchange minimum plus your target, then auto-sheds the excess via a market close when the limit fills (hedge mode requires positionId — shed orders cannot be pre-placed).',
+      )
+    }
+    return out
+  }, [isBuilder, builder.entryStyle, builderUsesTrick])
 
   const presets = LEVERAGE_PRESETS.filter((p) => p >= spec.minLeverage && p <= spec.maxLeverage)
   const canSubmit =
@@ -423,14 +434,16 @@ export function OrderTicket({
     }
   }
 
-  // Places resting LIMIT open orders at each rung (shared TP/SL). Sub-minimum rungs
-  // register auto-shed jobs — excess is closed with positionId after each fill.
+  // Places resting POST_ONLY LIMIT open orders at each rung (shared TP/SL). Momentum
+  // rungs on the far side of price are deferred until the market moves through the level.
   async function doSubmitBuilder() {
     setShowConfirm(false)
     const active = builderRungSizings.filter((r) => r.openQty > 0)
     if (active.length === 0) return
     const orderIds: string[] = []
     const shedInputs: BuilderShedJobInput[] = []
+    const deferredInputs: Parameters<typeof registerBuilderDeferredRungs>[0] = []
+    let skippedCross = 0
     try {
       setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
       let hedge = positionMode === 'HEDGE'
@@ -455,17 +468,45 @@ export function OrderTicket({
       const tp = String(roundToPrecision(builder.tp, spec.quotePrecision))
       const sl = String(roundToPrecision(builder.stop, spec.quotePrecision))
       const total = active.length
+      const refPrice = currentPrice > 0 ? currentPrice : builder.avgEntry
 
       for (let i = 0; i < active.length; i++) {
         const r = active[i]
+        const limitPrice = roundToPrecision(r.price, spec.quotePrecision)
+        const canRest = builderLimitCanRest(builder.side, limitPrice, refPrice)
+
+        if (builderShouldDeferRung(builder.side, builder.entryStyle, limitPrice, refPrice)) {
+          deferredInputs.push({
+            symbol,
+            side: builder.side,
+            rungPrice: limitPrice,
+            openQty: r.openQty,
+            shedQty: r.shedQty,
+            usesTrick: r.usesTrick,
+            rungIndex: i,
+            tp,
+            sl,
+            leverage,
+            marginMode,
+            marginCoin,
+            basePrecision: spec.basePrecision,
+            quotePrecision: spec.quotePrecision,
+          })
+          continue
+        }
+        if (!canRest) {
+          skippedCross++
+          continue
+        }
+
         setSubmit({ kind: 'submitting', step: `Placing rung ${i + 1}/${total}…` })
         const clientId = `builder-${symbol}-${i}-${Date.now()}`
         const openParams: PlaceOrderParams = {
           symbol,
           side: isLong ? 'BUY' : 'SELL',
           orderType: 'LIMIT',
-          effect: 'GTC',
-          price: String(roundToPrecision(r.price, spec.quotePrecision)),
+          effect: 'POST_ONLY',
+          price: String(limitPrice),
           qty: String(floorToPrecision(r.openQty, spec.basePrecision)),
           clientId,
           tpPrice: tp,
@@ -497,21 +538,42 @@ export function OrderTicket({
         registerBuilderShedJobs(shedInputs)
         ensureBuilderShedPolling()
       }
+      if (deferredInputs.length) {
+        registerBuilderDeferredRungs(deferredInputs)
+        ensureBuilderDeferredPolling()
+      }
 
-      const shedNote =
-        shedInputs.length > 0
-          ? ` Auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'} — excess closes on fill.`
-          : undefined
-      setSubmit({ kind: 'done', orderIds, note: shedNote })
+      const notes: string[] = []
+      if (deferredInputs.length > 0) {
+        notes.push(
+          `${deferredInputs.length} momentum rung${deferredInputs.length === 1 ? '' : 's'} queued — resting limits will be placed once price moves through each level (avoids instant market fill).`,
+        )
+      }
+      if (skippedCross > 0) {
+        notes.push(`${skippedCross} rung${skippedCross === 1 ? '' : 's'} skipped — already at/past the limit price.`)
+      }
+      if (orderIds.length === 0 && deferredInputs.length === 0) {
+        throw new Error('No resting limits could be placed at the current price.')
+      }
+      if (shedInputs.length > 0) {
+        notes.push(
+          `Auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'} — excess closes on fill.`,
+        )
+      }
+      setSubmit({ kind: 'done', orderIds, note: notes.length ? notes.join(' ') : undefined })
     } catch (e) {
       if (shedInputs.length) {
         registerBuilderShedJobs(shedInputs)
         ensureBuilderShedPolling()
       }
+      if (deferredInputs.length) {
+        registerBuilderDeferredRungs(deferredInputs)
+        ensureBuilderDeferredPolling()
+      }
       const base = e instanceof Error ? e.message : String(e)
       const partial =
-        orderIds.length > 0
-          ? ` ${orderIds.length} open order${orderIds.length === 1 ? '' : 's'} placed${shedInputs.length ? `; auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'}` : ''}.`
+        orderIds.length > 0 || deferredInputs.length > 0
+          ? ` ${orderIds.length} open order${orderIds.length === 1 ? '' : 's'} placed${deferredInputs.length ? `; ${deferredInputs.length} deferred` : ''}${shedInputs.length ? `; auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'}` : ''}.`
           : ''
       setSubmit({ kind: 'error', message: `${base}${partial}`, orderIds })
     }
@@ -978,7 +1040,7 @@ export function OrderTicket({
             {both
               ? ' Both legs are MARKET orders opened at once; the long targets the resistance and the short targets the support.'
               : isBuilder
-                ? ' All rungs are resting LIMIT orders placed in advance at key levels, each carrying the shared TP and stop.'
+                ? ' All rungs use POST_ONLY limits so they rest on the book — momentum rungs above/below price are queued until the market moves through each level (no instant market fill).'
                 : ' For multiple same-direction positions per pair, enable '}
             {isSingle && <span className="text-zinc-300">Multi-Trade</span>}
             {isSingle && " once in the Bitunix app — it isn't available through the API."}
@@ -986,6 +1048,16 @@ export function OrderTicket({
 
           {isSingle && <EntryQualityCard quality={entryQuality} side={side} />}
 
+          {isBuilder && deferredCount > 0 && (
+            <p className="rounded-md bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
+              {deferredCount} momentum rung{deferredCount === 1 ? '' : 's'} waiting for price — resting limits will be placed automatically.
+            </p>
+          )}
+          {isBuilder && deferredFailedCount > 0 && (
+            <p className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">
+              Deferred placement failed on {deferredFailedCount} rung{deferredFailedCount === 1 ? '' : 's'} — place limits manually if needed.
+            </p>
+          )}
           {isBuilder && shedActiveCount > 0 && (
             <p className="rounded-md bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
               Auto-shed watching {shedActiveCount} rung{shedActiveCount === 1 ? '' : 's'} — excess closes via market when each limit fills.

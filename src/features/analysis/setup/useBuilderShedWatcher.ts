@@ -6,11 +6,18 @@ import {
   getActiveBuilderShedJobs,
   getBuilderShedJobs,
 } from './builderShed'
+import {
+  ensureBuilderDeferredPolling,
+  getActiveBuilderDeferredRungs,
+  getBuilderDeferredRungs,
+} from './builderDeferred'
 
-/** Polls for builder open-order fills and sheds excess with a hedge CLOSE + positionId. */
+/** Polls builder fill/shed jobs and deferred momentum rung placement. */
 export function useBuilderShedWatcher(): {
   activeCount: number
   failedCount: number
+  deferredCount: number
+  deferredFailedCount: number
 } {
   const hasKeys = useCredentials((s) => s.hasKeys())
   const live = useCredentials((s) => s.liveTradingEnabled)
@@ -19,16 +26,26 @@ export function useBuilderShedWatcher(): {
 
   useEffect(() => {
     if (!hasKeys || !live) return
-    return ensureBuilderShedPolling(() => {
+    const onTick = () => {
       bump((n) => n + 1)
       queryClient.invalidateQueries({ queryKey: ['pendingPositions'] })
       queryClient.invalidateQueries({ queryKey: ['account'] })
-    })
+      queryClient.invalidateQueries({ queryKey: ['pendingOrders'] })
+    }
+    const stopShed = ensureBuilderShedPolling(onTick)
+    const stopDeferred = ensureBuilderDeferredPolling(onTick)
+    return () => {
+      stopShed()
+      stopDeferred()
+    }
   }, [hasKeys, live, queryClient])
 
   const jobs = getBuilderShedJobs()
+  const deferred = getBuilderDeferredRungs()
   return {
     activeCount: getActiveBuilderShedJobs().length,
     failedCount: jobs.filter((j) => j.status === 'failed').length,
+    deferredCount: getActiveBuilderDeferredRungs().length,
+    deferredFailedCount: deferred.filter((j) => j.status === 'failed').length,
   }
 }
