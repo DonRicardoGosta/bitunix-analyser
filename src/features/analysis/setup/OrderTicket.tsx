@@ -4,13 +4,15 @@ import type { TradePlan, RangeStraddlePlan, RangeStraddleLeg, BacktestStats } fr
 import { evaluateEntry, type EntryQuality } from './entryQuality'
 import {
   projectOrder,
+  marginFromQty,
+  qtyFromMargin,
   roundToPrecision,
   type OrderProjection,
   type TpMode,
 } from './order'
 import { useSymbolSpecs } from '../useSymbolSpecs'
 import { useCredentials } from '../../../store/credentials'
-import { useUiPrefs, type TradeMode } from '../../../store/uiPrefs'
+import { useUiPrefs, type TicketSizingMode, type TradeMode } from '../../../store/uiPrefs'
 import {
   changeLeverage,
   changeMarginMode,
@@ -71,6 +73,8 @@ export function OrderTicket({
   // Persisted ticket settings (remembered across navigation/reloads).
   const leverage = useUiPrefs((s) => s.ticketLeverage)
   const margin = useUiPrefs((s) => s.ticketMargin)
+  const sizingMode = useUiPrefs((s) => s.ticketSizingMode)
+  const qty = useUiPrefs((s) => s.ticketQty)
   const orderType = useUiPrefs((s) => s.ticketOrderType)
   const marginMode = useUiPrefs((s) => s.ticketMarginMode)
   const tpMode = useUiPrefs((s) => s.ticketTpMode)
@@ -79,6 +83,7 @@ export function OrderTicket({
   const setTicket = useUiPrefs((s) => s.setTicket)
   const setLeverage = (v: number) => setTicket({ ticketLeverage: v })
   const setMargin = (v: string) => setTicket({ ticketMargin: v })
+  const setQty = (v: string) => setTicket({ ticketQty: v })
   const setOrderType = (v: 'LIMIT' | 'MARKET') => setTicket({ ticketOrderType: v })
   const setMarginMode = (v: 'CROSS' | 'ISOLATION') => setTicket({ ticketMarginMode: v })
   const setTpMode = (v: TpMode) => setTicket({ ticketTpMode: v })
@@ -123,6 +128,15 @@ export function OrderTicket({
   }, [spec.minLeverage, spec.maxLeverage, spec.defaultLeverage, leverage, setTicket])
 
   const effectiveEntry = orderType === 'MARKET' ? currentPrice : toNum(entry, currentPrice)
+  const sizingEntry = both ? currentPrice : effectiveEntry
+  const baseSymbol = spec.symbol.replace(/USDT$/, '')
+
+  const effectiveMargin = useMemo(() => {
+    if (sizingMode === 'qty') {
+      return marginFromQty(toNum(qty), sizingEntry, leverage, spec.quotePrecision)
+    }
+    return toNum(margin)
+  }, [sizingMode, qty, margin, sizingEntry, leverage, spec.quotePrecision])
 
   const projection = useMemo(
     () =>
@@ -133,14 +147,14 @@ export function OrderTicket({
         tp1: toNum(tp1),
         tp2: toNum(tp2),
         leverage,
-        margin: toNum(margin),
+        margin: effectiveMargin,
         tpMode,
         split,
         spec,
         marginMode,
         availableBalance,
       }),
-    [side, effectiveEntry, stop, tp1, tp2, leverage, margin, tpMode, split, spec, marginMode, availableBalance],
+    [side, effectiveEntry, stop, tp1, tp2, leverage, effectiveMargin, tpMode, split, spec, marginMode, availableBalance],
   )
 
   // Live entry-quality read for the single-direction trade: is *now* a good
@@ -152,7 +166,7 @@ export function OrderTicket({
 
   // Straddle (both directions) projection: one MARKET leg per side, each sized
   // from its share of the entered margin, with its own TP/SL at the levels.
-  const totalMargin = toNum(margin)
+  const totalMargin = effectiveMargin
   const longProj = useMemo(
     () =>
       straddle.long
@@ -341,6 +355,33 @@ export function OrderTicket({
     setTp2(String(roundToPrecision(plan.tp2, q)))
   }
 
+  function switchSizingMode(next: TicketSizingMode) {
+    if (next === sizingMode) return
+    if (next === 'qty') {
+      const q = qtyFromMargin(toNum(margin), sizingEntry, leverage, spec.basePrecision)
+      setTicket({
+        ticketSizingMode: 'qty',
+        ticketQty: q > 0 ? String(q) : '',
+      })
+    } else {
+      const m = marginFromQty(toNum(qty), sizingEntry, leverage, spec.quotePrecision)
+      setTicket({
+        ticketSizingMode: 'margin',
+        ticketMargin: m > 0 ? String(m) : margin,
+      })
+    }
+  }
+
+  function applyBalancePreset(fraction: number) {
+    if (!availableBalance) return
+    if (sizingMode === 'qty') {
+      const q = qtyFromMargin(availableBalance * fraction, sizingEntry, leverage, spec.basePrecision)
+      setQty(String(q))
+    } else {
+      setMargin(String(roundToPrecision(availableBalance * fraction, 2)))
+    }
+  }
+
   return (
     <Panel
       title="Order ticket"
@@ -432,27 +473,56 @@ export function OrderTicket({
             </div>
           </div>
 
-          {/* Margin */}
+          {/* Size: USDT margin or base qty */}
           <div>
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-[11px] uppercase tracking-wide text-zinc-500">Margin ({marginCoin})</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] uppercase tracking-wide text-zinc-500">Size</span>
+                <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+                  {([
+                    ['margin', marginCoin],
+                    ['qty', baseSymbol],
+                  ] as const).map(([m, label]) => (
+                    <button
+                      key={m}
+                      onClick={() => switchSizingMode(m)}
+                      className={clsx(
+                        'rounded-md px-2 py-0.5 text-[10px] font-medium',
+                        sizingMode === m ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200',
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {availableBalance ? (
                 <span className="text-[10px] text-zinc-600">avail {fmtUsd(availableBalance)}</span>
               ) : null}
             </div>
-            <input
-              type="number"
-              min={0}
-              value={margin}
-              onChange={(e) => setMargin(e.target.value)}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
-            />
+            {sizingMode === 'margin' ? (
+              <input
+                type="number"
+                min={0}
+                value={margin}
+                onChange={(e) => setMargin(e.target.value)}
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
+              />
+            ) : (
+              <input
+                type="number"
+                min={0}
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
+              />
+            )}
             {availableBalance ? (
               <div className="mt-1 flex gap-1">
                 {[0.25, 0.5, 0.75, 1].map((f) => (
                   <button
                     key={f}
-                    onClick={() => setMargin(String(roundToPrecision(availableBalance * f, 2)))}
+                    onClick={() => applyBalancePreset(f)}
                     className="rounded-md border border-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
                   >
                     {f * 100}%
@@ -573,7 +643,11 @@ export function OrderTicket({
           {!both && (
             <>
               <div className="grid grid-cols-2 gap-2">
-                <Stat label="Position size" value={`${fmtCompact(projection.qty, 4)} ${spec.symbol.replace(/USDT$/, '')}`} />
+                {sizingMode === 'margin' ? (
+                  <Stat label="Position size" value={`${fmtCompact(projection.qty, 4)} ${baseSymbol}`} />
+                ) : (
+                  <Stat label={`Margin (${marginCoin})`} value={fmtUsd(projection.margin)} />
+                )}
                 <Stat label="Notional" value={`$${fmtCompact(projection.notional)}`} />
                 <Stat label="Est. liq. price" value={fmtPrice(projection.liqPrice)} tone="down" />
                 <Stat label="R:R" value={projection.rr ? projection.rr.toFixed(2) : '—'} />
@@ -617,7 +691,10 @@ export function OrderTicket({
               worstCase={straddleWorstCase}
               breakoutUp={breakoutUp}
               breakoutDown={breakoutDown}
-              baseSymbol={spec.symbol.replace(/USDT$/, '')}
+              baseSymbol={baseSymbol}
+              sizingMode={sizingMode}
+              marginCoin={marginCoin}
+              totalMargin={totalMargin}
             />
           )}
 
@@ -710,8 +787,9 @@ export function OrderTicket({
           orderType={orderType}
           marginMode={marginMode}
           leverage={leverage}
-          margin={toNum(margin)}
+          margin={projection.margin}
           marginCoin={marginCoin}
+          baseSymbol={baseSymbol}
           projection={projection}
           entryQuality={entryQuality}
           onCancel={() => setShowConfirm(false)}
@@ -723,8 +801,9 @@ export function OrderTicket({
           symbol={symbol}
           marginMode={marginMode}
           leverage={leverage}
-          margin={toNum(margin)}
+          margin={totalMargin}
           marginCoin={marginCoin}
+          baseSymbol={baseSymbol}
           straddle={straddle}
           longProj={longProj}
           shortProj={shortProj}
@@ -829,6 +908,7 @@ function ConfirmModal({
   leverage,
   margin,
   marginCoin,
+  baseSymbol,
   projection,
   entryQuality,
   onCancel,
@@ -841,6 +921,7 @@ function ConfirmModal({
   leverage: number
   margin: number
   marginCoin: string
+  baseSymbol: string
   projection: ReturnType<typeof projectOrder>
   entryQuality: EntryQuality
   onCancel: () => void
@@ -890,7 +971,7 @@ function ConfirmModal({
           <Row label="Margin" value={`${fmtUsd(margin)} ${marginCoin}`} />
           <Row label="Entry" value={fmtPrice(projection.entry)} />
           <Row label="Stop" value={fmtPrice(projection.stop)} />
-          <Row label="Size" value={fmtCompact(projection.qty, 4)} />
+          <Row label="Size" value={`${fmtCompact(projection.qty, 4)} ${baseSymbol}`} />
           <Row label="Est. liq." value={fmtPrice(projection.liqPrice)} />
         </div>
 
@@ -1041,6 +1122,9 @@ function StraddleProjection({
   breakoutUp,
   breakoutDown,
   baseSymbol,
+  sizingMode,
+  marginCoin,
+  totalMargin,
 }: {
   straddle: RangeStraddlePlan
   longProj: OrderProjection | null
@@ -1050,10 +1134,16 @@ function StraddleProjection({
   breakoutUp: number
   breakoutDown: number
   baseSymbol: string
+  sizingMode: TicketSizingMode
+  marginCoin: string
+  totalMargin: number
 }) {
   return (
     <>
       <div className="grid grid-cols-2 gap-2">
+        {sizingMode === 'qty' && (
+          <Stat label={`Margin (${marginCoin})`} value={fmtUsd(totalMargin)} />
+        )}
         <Stat label="Long size" value={`${fmtCompact(longProj?.qty ?? 0, 4)} ${baseSymbol}`} tone="up" />
         <Stat label="Short size" value={`${fmtCompact(shortProj?.qty ?? 0, 4)} ${baseSymbol}`} tone="down" />
         <Stat label="Long liq." value={fmtPrice(longProj?.liqPrice ?? 0)} tone="down" />
@@ -1094,6 +1184,7 @@ function StraddleConfirmModal({
   leverage,
   margin,
   marginCoin,
+  baseSymbol,
   straddle,
   longProj,
   shortProj,
@@ -1107,6 +1198,7 @@ function StraddleConfirmModal({
   leverage: number
   margin: number
   marginCoin: string
+  baseSymbol: string
   straddle: RangeStraddlePlan
   longProj: OrderProjection
   shortProj: OrderProjection
@@ -1136,6 +1228,7 @@ function StraddleConfirmModal({
           <Row label="Margin mode" value={marginMode === 'CROSS' ? 'Cross' : 'Isolated'} />
           <Row label="Leverage" value={`${leverage}x`} />
           <Row label="Margin" value={`${fmtUsd(margin)} ${marginCoin}`} />
+          <Row label="Total size" value={`${fmtCompact(longProj.qty + shortProj.qty, 4)} ${baseSymbol}`} />
           <Row label="Range R:R" value={straddle.bestCaseR ? straddle.bestCaseR.toFixed(2) : '—'} />
         </div>
 

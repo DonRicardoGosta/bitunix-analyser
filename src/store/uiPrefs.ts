@@ -11,6 +11,8 @@ export type MarginMode = 'CROSS' | 'ISOLATION'
 export type TpMode = 'TP1' | 'TP2' | 'BOTH'
 /** 'single' = one-sided LONG/SHORT, 'both' = range straddle (both directions). */
 export type TradeMode = 'single' | 'both'
+/** 'margin' = size by USDT collateral, 'qty' = size by base asset quantity. */
+export type TicketSizingMode = 'margin' | 'qty'
 
 interface StatsRange {
   statsMode: StatsMode
@@ -25,6 +27,8 @@ interface StatsRange {
 interface TicketPrefs {
   ticketLeverage: number
   ticketMargin: string
+  ticketSizingMode: TicketSizingMode
+  ticketQty: string
   ticketOrderType: OrderType
   ticketMarginMode: MarginMode
   ticketTpMode: TpMode
@@ -55,6 +59,8 @@ export const useUiPrefs = create<UiPrefsState>()(
       // Order ticket defaults
       ticketLeverage: 20,
       ticketMargin: '1',
+      ticketSizingMode: 'margin',
+      ticketQty: '',
       ticketOrderType: 'MARKET',
       ticketMarginMode: 'CROSS',
       ticketTpMode: 'TP1',

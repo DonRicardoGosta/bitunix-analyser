@@ -37,6 +37,28 @@ export function roundToPrecision(value: number, decimals: number): number {
   return Math.round(value * f) / f
 }
 
+/** Derive collateral (USDT) from base qty, entry, and leverage. */
+export function marginFromQty(
+  qty: number,
+  entry: number,
+  leverage: number,
+  quotePrecision: number,
+): number {
+  if (!Number.isFinite(qty) || !Number.isFinite(entry) || !Number.isFinite(leverage) || leverage <= 0) return 0
+  return roundToPrecision((qty * entry) / leverage, quotePrecision)
+}
+
+/** Derive base qty from collateral, entry, and leverage. */
+export function qtyFromMargin(
+  margin: number,
+  entry: number,
+  leverage: number,
+  basePrecision: number,
+): number {
+  if (!Number.isFinite(margin) || !Number.isFinite(entry) || entry <= 0) return 0
+  return floorToPrecision((margin * leverage) / entry, basePrecision)
+}
+
 export interface OrderLeg {
   label: 'TP1' | 'TP2'
   tp: number
@@ -91,7 +113,7 @@ export function projectOrder(input: ProjectInput): OrderProjection {
   const warnings: string[] = []
   const isCross = marginMode === 'CROSS'
 
-  const qty = floorToPrecision((margin * leverage) / entry, spec.basePrecision)
+  const qty = qtyFromMargin(margin, entry, leverage, spec.basePrecision)
   const notional = qty * entry
 
   const legs: OrderLeg[] = []
@@ -105,7 +127,7 @@ export function projectOrder(input: ProjectInput): OrderProjection {
     legs.push({ label: 'TP1', tp: tp1, qty: qty1, profit: pnlAt(side, entry, tp1, qty1) })
     legs.push({ label: 'TP2', tp: tp2, qty: qty2, profit: pnlAt(side, entry, tp2, qty2) })
     if (spec.minTradeVolume > 0 && (qty1 < spec.minTradeVolume || qty2 < spec.minTradeVolume)) {
-      warnings.push('A leg is below the minimum trade size — increase margin or use a single TP.')
+      warnings.push('A leg is below the minimum trade size — increase size or use a single TP.')
     }
   }
 
@@ -139,10 +161,10 @@ export function projectOrder(input: ProjectInput): OrderProjection {
 
   if (spec.minTradeVolume > 0 && qty < spec.minTradeVolume) {
     warnings.push(
-      `Position size ${qty} is below the minimum (${spec.minTradeVolume}). Increase margin or leverage.`,
+      `Position size ${qty} is below the minimum (${spec.minTradeVolume}). Increase size or leverage.`,
     )
   }
-  if (qty <= 0) warnings.push('Position size is zero — increase margin or leverage.')
+  if (qty <= 0) warnings.push('Position size is zero — increase size or leverage.')
 
   return {
     side,
