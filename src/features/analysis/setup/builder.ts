@@ -6,15 +6,14 @@ import { BUILDER } from './config'
 // Position Builder (laddered scale-in).
 //
 // Splits a small margin budget across several resting LIMIT orders placed in
-// advance at key levels in the chosen build direction:
-//   - LONG build:  rungs sit on supports at/below price (buy the dips).
-//   - SHORT build: rungs sit on resistances at/above price (sell the rips).
+// advance at key levels in the chosen build direction. Two entry styles:
+//   - momentum: pyramid with the trend — LONG rungs above price, SHORT below.
+//   - pullback: scale into dips/rips — LONG rungs below price, SHORT above.
 // A single shared take-profit and a wide-but-real stop are attached to every
-// rung, so the aggregate position behaves as one TP / one SL. Each rung is kept
-// tiny so a drastic adverse move neither liquidates nor stops us out early; the
-// order ticket sizes the rungs from the budget and handles the minimum-quantity
-// workaround (open `target + min`, shed `min` via a reduce-only order).
+// rung, so the aggregate position behaves as one TP / one SL.
 // ---------------------------------------------------------------------------
+
+export type BuilderEntryStyle = 'momentum' | 'pullback'
 
 export interface BuilderRung {
   /** The key level this rung sits on, or null for a synthetic ATR-spaced rung. */
@@ -28,6 +27,8 @@ export interface BuilderRung {
 export interface PositionBuilderPlan {
   /** Direction this plan was built for. */
   side: 'LONG' | 'SHORT'
+  /** Ladder placement style used for this plan. */
+  entryStyle: BuilderEntryStyle
   /** Engine's recommended build direction (from HTF trend + bias). */
   suggestedSide: 'LONG' | 'SHORT'
   valid: boolean
@@ -38,7 +39,7 @@ export interface PositionBuilderPlan {
   tp: number
   /** Shared (intentionally wide) stop-loss for the whole position. */
   stop: number
-  /** Ladder span (deepest rung → nearest rung) as a fraction of price. */
+  /** Ladder span (nearest rung → furthest rung) as a fraction of price. */
   rangePct: number
   /** Reward:risk from the average entry to the TP vs. the stop. */
   rr: number
@@ -56,6 +57,8 @@ export interface BuilderInput {
   bias: number
   /** Desired rung count (clamped to BUILDER.minRungs..maxRungs). */
   rungs?: number
+  /** Momentum (pyramid with trend) vs pullback (buy dips / sell rips). */
+  entryStyle?: BuilderEntryStyle
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -75,16 +78,29 @@ function pickRungs(
   levels: KeyLevel[],
   atr: number,
   count: number,
+  entryStyle: BuilderEntryStyle,
 ): BuilderRung[] {
   const isLong = side === 'LONG'
+  const isMomentum = entryStyle === 'momentum'
   const maxSpan = Math.max(atr * BUILDER.maxSpanAtrMult, price * BUILDER.maxSpanPct)
-  const entrySide = isLong ? 'support' : 'resistance'
+  const entrySide = isMomentum ? (isLong ? 'resistance' : 'support') : isLong ? 'support' : 'resistance'
 
-  // Real key levels on the entry side within the ladder span, nearest first.
+  const inSpan = (l: KeyLevel) => {
+    if (isMomentum) {
+      return isLong ? l.price >= price && l.price <= price + maxSpan : l.price <= price && l.price >= price - maxSpan
+    }
+    return isLong ? l.price <= price && l.price >= price - maxSpan : l.price >= price && l.price <= price + maxSpan
+  }
+
+  const sortReal = (a: KeyLevel, b: KeyLevel) => {
+    if (isMomentum) return isLong ? a.price - b.price : b.price - a.price
+    return isLong ? b.price - a.price : a.price - b.price
+  }
+
   const real = levels
     .filter((l) => l.side === entrySide && l.strength >= BUILDER.minLevelStrength)
-    .filter((l) => (isLong ? l.price <= price && l.price >= price - maxSpan : l.price >= price && l.price <= price + maxSpan))
-    .sort((a, b) => (isLong ? b.price - a.price : a.price - b.price))
+    .filter(inSpan)
+    .sort(sortReal)
 
   const tol = Math.max(atr * 0.3, price * 0.0015)
   const rungs: BuilderRung[] = []
@@ -95,17 +111,18 @@ function pickRungs(
     if (accept(l.price)) rungs.push({ level: l, price: l.price, weight: 0 })
   }
 
-  // Pad with synthetic ATR/span-spaced rungs if there are too few real levels.
   if (rungs.length < count) {
     const step = maxSpan / count
     for (let i = 1; i <= count && rungs.length < count; i++) {
-      const p = isLong ? price - step * i : price + step * i
+      const p = isMomentum ? (isLong ? price + step * i : price - step * i) : isLong ? price - step * i : price + step * i
       if (p > 0 && accept(p)) rungs.push({ level: null, price: p, weight: 0 })
     }
   }
 
-  // Order from nearest to deepest and weight equally.
-  rungs.sort((a, b) => (isLong ? b.price - a.price : a.price - b.price))
+  rungs.sort((a, b) => {
+    if (isMomentum) return isLong ? a.price - b.price : b.price - a.price
+    return isLong ? b.price - a.price : a.price - b.price
+  })
   const w = rungs.length > 0 ? 1 / rungs.length : 0
   for (const r of rungs) r.weight = w
   return rungs
@@ -114,10 +131,12 @@ function pickRungs(
 export function buildPositionBuilder(input: BuilderInput): PositionBuilderPlan {
   const { side, price, levels, atr, htfValue, bias } = input
   const isLong = side === 'LONG'
+  const entryStyle = input.entryStyle ?? BUILDER.defaultEntryStyle
+  const isMomentum = entryStyle === 'momentum'
   const suggestedSide = suggestBuildSide(htfValue, bias)
   const count = clamp(Math.round(input.rungs ?? BUILDER.defaultRungs), BUILDER.minRungs, BUILDER.maxRungs)
 
-  const rungs = pickRungs(side, price, levels, atr, count)
+  const rungs = pickRungs(side, price, levels, atr, count, entryStyle)
 
   const reasons: string[] = []
   let note: string | undefined
@@ -125,6 +144,7 @@ export function buildPositionBuilder(input: BuilderInput): PositionBuilderPlan {
   if (rungs.length < BUILDER.minRungs) {
     return {
       side,
+      entryStyle,
       suggestedSide,
       valid: false,
       rungs,
@@ -134,31 +154,33 @@ export function buildPositionBuilder(input: BuilderInput): PositionBuilderPlan {
       rangePct: 0,
       rr: 0,
       reasons,
-      note: 'Not enough room to build a ladder around price on this side.',
+      note: isMomentum
+        ? 'Not enough room to pyramid on this side.'
+        : 'Not enough room to build a ladder around price on this side.',
     }
   }
 
-  // Average entry assuming every rung fills (weighted mean of rung prices).
   const wsum = rungs.reduce((a, r) => a + r.weight, 0) || 1
   const avgEntry = rungs.reduce((a, r) => a + r.price * r.weight, 0) / wsum
 
-  // Deepest rung and a wide, real stop beyond it.
-  const deepest = isLong
-    ? Math.min(...rungs.map((r) => r.price))
-    : Math.max(...rungs.map((r) => r.price))
-  const nearest = isLong
-    ? Math.max(...rungs.map((r) => r.price))
-    : Math.min(...rungs.map((r) => r.price))
+  const prices = rungs.map((r) => r.price)
+  const nearest = isMomentum ? (isLong ? Math.min(...prices) : Math.max(...prices)) : isLong ? Math.max(...prices) : Math.min(...prices)
+  const furthest = isMomentum ? (isLong ? Math.max(...prices) : Math.min(...prices)) : isLong ? Math.min(...prices) : Math.max(...prices)
+
   const stopBuffer = Math.max(atr * BUILDER.stopBufferAtr, price * BUILDER.stopBufferPct)
-  const stop = isLong ? deepest - stopBuffer : deepest + stopBuffer
+  const stop = isMomentum ? (isLong ? nearest - stopBuffer : nearest + stopBuffer) : isLong ? furthest - stopBuffer : furthest + stopBuffer
   const risk = Math.abs(avgEntry - stop)
 
-  // Shared take-profit: nearest strong opposite level beyond minTpR, else R-mult.
   const targetSide = isLong ? 'resistance' : 'support'
   const minTpDist = risk * BUILDER.minTpR
   const targets = levels
     .filter((l) => l.side === targetSide)
-    .filter((l) => (isLong ? l.price >= avgEntry + minTpDist : l.price <= avgEntry - minTpDist))
+    .filter((l) => {
+      if (isMomentum) {
+        return isLong ? l.price >= furthest + minTpDist : l.price <= furthest - minTpDist
+      }
+      return isLong ? l.price >= avgEntry + minTpDist : l.price <= avgEntry - minTpDist
+    })
     .sort((a, b) => (isLong ? a.price - b.price : b.price - a.price))
   const tpLevel = targets[0]
   const tp = tpLevel
@@ -168,19 +190,23 @@ export function buildPositionBuilder(input: BuilderInput): PositionBuilderPlan {
       : avgEntry - risk * BUILDER.fallbackTpR
 
   const rr = risk > 0 ? Math.abs(tp - avgEntry) / risk : 0
-  const rangePct = price > 0 ? Math.abs(nearest - deepest) / price : 0
+  const rangePct = price > 0 ? Math.abs(furthest - nearest) / price : 0
 
-  // ---- Reasons ----
   const realCount = rungs.filter((r) => r.level).length
+  const styleLabel = isMomentum ? 'momentum' : 'pullback'
+  const dirLabel = isMomentum ? (isLong ? 'above price' : 'below price') : isLong ? 'below price' : 'above price'
   reasons.push(
-    `${rungs.length} rungs (${realCount} at key levels${rungs.length - realCount > 0 ? `, ${rungs.length - realCount} ATR-spaced` : ''}) ` +
-      `from ${nearest.toPrecision(6)} to ${deepest.toPrecision(6)}`,
+    `${rungs.length} rungs · ${styleLabel} · ${dirLabel} ${nearest.toPrecision(6)} → ${furthest.toPrecision(6)}` +
+      (realCount > 0 ? ` (${realCount} at key levels${rungs.length - realCount > 0 ? `, ${rungs.length - realCount} ATR-spaced` : ''})` : ''),
   )
   if (tpLevel) reasons.push(`TP at ${tpLevel.sources.join(' + ')} (${tpLevel.price.toPrecision(6)})`)
   else reasons.push(`TP at ${BUILDER.fallbackTpR}R (no structural target in range)`)
-  reasons.push(`Stop ${stopBuffer > 0 ? `${(stopBuffer / price * 100).toFixed(2)}% ` : ''}beyond the deepest rung`)
+  reasons.push(
+    isMomentum
+      ? `Stop ${stopBuffer > 0 ? `${((stopBuffer / price) * 100).toFixed(2)}% ` : ''}beyond the nearest rung`
+      : `Stop ${stopBuffer > 0 ? `${((stopBuffer / price) * 100).toFixed(2)}% ` : ''}beyond the deepest rung`,
+  )
 
-  // ---- Validity ----
   const valid = rungs.length >= BUILDER.minRungs && risk > 0 && rr >= BUILDER.minTpR
 
   if (!valid) {
@@ -195,6 +221,7 @@ export function buildPositionBuilder(input: BuilderInput): PositionBuilderPlan {
 
   return {
     side,
+    entryStyle,
     suggestedSide,
     valid,
     rungs,

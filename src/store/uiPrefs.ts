@@ -14,6 +14,8 @@ export type TpMode = 'TP1' | 'TP2' | 'BOTH'
  * 'builder' = laddered scale-in (Position Builder).
  */
 export type TradeMode = 'single' | 'both' | 'builder'
+import type { BuilderEntryStyle } from '../features/analysis/setup/builder'
+export type { BuilderEntryStyle } from '../features/analysis/setup/builder'
 /** 'margin' = size by USDT collateral, 'qty' = size by base asset quantity. */
 export type TicketSizingMode = 'margin' | 'qty'
 
@@ -44,6 +46,8 @@ interface TicketPrefs {
   ticketBuilderBudget: string
   /** Position Builder: number of ladder rungs. */
   ticketBuilderRungs: number
+  /** Position Builder: momentum (pyramid with trend) vs pullback (buy dips / sell rips). */
+  ticketBuilderEntryStyle: BuilderEntryStyle
 }
 
 interface UiPrefsState extends StatsRange, TicketPrefs {
@@ -76,6 +80,7 @@ export const useUiPrefs = create<UiPrefsState>()(
       ticketStraddleSplit: 0.5,
       ticketBuilderBudget: '5',
       ticketBuilderRungs: 5,
+      ticketBuilderEntryStyle: 'momentum',
       setTicket: (p) => set((s) => ({ ...s, ...p })),
     }),
     { name: 'bitunix-ui-prefs' },

@@ -23,7 +23,7 @@ import { buildRangeStraddle, type RangeStraddlePlan } from './straddle'
 import { buildPositionBuilder, suggestBuildSide, type PositionBuilderPlan } from './builder'
 import { detectPatterns, type DetectedPattern } from './patterns'
 import { computeReversalRiskBySide, type ReversalRiskBySide, type MarketContext } from './reversalRisk'
-import { BACKTEST, HTF, MAX_TOTAL_WEIGHT, PLAN, WEIGHTS } from './config'
+import { BACKTEST, BUILDER, HTF, MAX_TOTAL_WEIGHT, PLAN, WEIGHTS } from './config'
 
 export type { FactorScore, Regime } from './signal'
 export type { BacktestStats } from './backtest'
@@ -614,6 +614,7 @@ export function buildSetup(input: SetupInput): SetupResult | null {
     regime,
     htfValue,
     bias,
+    entryStyle: BUILDER.defaultEntryStyle,
   })
 
   // Historical validation of the candle-derived signal.

@@ -1596,10 +1596,13 @@ function StraddleConfirmModal({
 
 function BuilderInputs({ plan }: { plan: PositionBuilderPlan }) {
   const isLong = plan.side === 'LONG'
+  const styleLabel = plan.entryStyle === 'momentum' ? 'Momentum' : 'Pullback'
   return (
     <div className="rounded-lg border border-zinc-800 p-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-[11px] uppercase tracking-wide text-zinc-500">Ladder · {plan.rungs.length} rungs</span>
+        <span className="text-[11px] uppercase tracking-wide text-zinc-500">
+          Ladder · {plan.rungs.length} rungs · {styleLabel}
+        </span>
         <span className={clsx('text-xs font-semibold', isLong ? 'text-emerald-400' : 'text-rose-400')}>
           Build {plan.side}
         </span>

@@ -28,7 +28,7 @@ import { useBuilderShedWatcher } from '../setup/useBuilderShedWatcher'
 import { SetupChart, type PriceLineDef, type ChartMarker } from '../../../components/charts/SetupChart'
 import { Panel, Spinner, EmptyState, Badge } from '../../../components/ui/primitives'
 import { BinanceNote } from '../controls'
-import { useUiPrefs, type TradeMode } from '../../../store/uiPrefs'
+import { useUiPrefs, type TradeMode, type BuilderEntryStyle } from '../../../store/uiPrefs'
 import { ema } from '../../../lib/indicators'
 import { fmtPrice, fmtCompact, fmtPct, toNum } from '../../../lib/format'
 
@@ -76,6 +76,7 @@ export function SetupTab() {
   const tradeMode = useUiPrefs((s) => s.ticketTradeMode)
   const setTradeMode = (m: TradeMode) => useUiPrefs.getState().setTicket({ ticketTradeMode: m })
   const builderRungs = useUiPrefs((s) => s.ticketBuilderRungs)
+  const builderEntryStyle = useUiPrefs((s) => s.ticketBuilderEntryStyle)
   const userPickedRef = useRef(false)
   const chooseSide = (s: 'LONG' | 'SHORT') => {
     userPickedRef.current = true
@@ -136,8 +137,9 @@ export function SetupTab() {
       htfValue: setup.htfTrend,
       bias: setup.bias,
       rungs: builderRungs,
+      entryStyle: builderEntryStyle,
     })
-  }, [setup, builderSide, builderRungs])
+  }, [setup, builderSide, builderRungs, builderEntryStyle])
 
   const lines = useMemo<PriceLineDef[]>(() => {
     if (!setup) return []
@@ -252,7 +254,7 @@ export function SetupTab() {
           {tradeMode === 'both'
             ? 'Both directions: open a LONG and a SHORT at once, each targeting the opposite strong level. Profits when price oscillates in the range.'
             : tradeMode === 'builder'
-              ? 'Position builder: split a small margin budget across tiny resting limit orders at key levels, with one shared TP and a wide stop — scale into a position without getting liquidated on a sharp move.'
+              ? 'Position builder: pyramid with the trend (momentum) or scale into dips/rips (pullback) via tiny resting limits, one shared TP and a wide stop.'
               : 'Single: one-sided LONG or SHORT plan.'}
         </p>
         <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
@@ -285,6 +287,8 @@ export function SetupTab() {
             onSideChange={chooseBuilderSide}
             rungs={builderRungs}
             onRungsChange={(n) => useUiPrefs.getState().setTicket({ ticketBuilderRungs: n })}
+            entryStyle={builderEntryStyle}
+            onEntryStyleChange={(s) => useUiPrefs.getState().setTicket({ ticketBuilderEntryStyle: s })}
           />
         ) : null
       ) : (
@@ -879,12 +883,16 @@ function BuilderCard({
   onSideChange,
   rungs,
   onRungsChange,
+  entryStyle,
+  onEntryStyleChange,
 }: {
   plan: PositionBuilderPlan
   side: 'LONG' | 'SHORT'
   onSideChange: (s: 'LONG' | 'SHORT') => void
   rungs: number
   onRungsChange: (n: number) => void
+  entryStyle: BuilderEntryStyle
+  onEntryStyleChange: (s: BuilderEntryStyle) => void
 }) {
   const isLong = side === 'LONG'
   return (
@@ -895,23 +903,42 @@ function BuilderCard({
           {plan.valid ? <Badge tone="up">Valid setup</Badge> : <Badge tone="warn">Not valid here</Badge>}
           <Badge tone="neutral">Suggested: {plan.suggestedSide}</Badge>
         </div>
-        <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
-          {(['LONG', 'SHORT'] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => onSideChange(s)}
-              className={clsx(
-                'rounded-md px-3 py-1 text-xs font-semibold',
-                side === s
-                  ? s === 'LONG'
-                    ? 'bg-emerald-500 text-zinc-950'
-                    : 'bg-rose-500 text-zinc-950'
-                  : 'text-zinc-400 hover:text-zinc-200',
-              )}
-            >
-              Build {s}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+            {([
+              ['momentum', 'Momentum'],
+              ['pullback', 'Pullback'],
+            ] as const).map(([s, label]) => (
+              <button
+                key={s}
+                onClick={() => onEntryStyleChange(s)}
+                className={clsx(
+                  'rounded-md px-2.5 py-1 text-xs font-medium',
+                  entryStyle === s ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+            {(['LONG', 'SHORT'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => onSideChange(s)}
+                className={clsx(
+                  'rounded-md px-3 py-1 text-xs font-semibold',
+                  side === s
+                    ? s === 'LONG'
+                      ? 'bg-emerald-500 text-zinc-950'
+                      : 'bg-rose-500 text-zinc-950'
+                    : 'text-zinc-400 hover:text-zinc-200',
+                )}
+              >
+                Build {s}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 

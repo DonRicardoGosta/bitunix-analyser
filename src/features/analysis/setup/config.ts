@@ -81,15 +81,14 @@ export const STRADDLE = {
 /**
  * Position Builder (laddered scale-in) construction & gating.
  *
- * Splits a small margin budget across several resting limit orders at key
- * levels in the build direction (supports below for a LONG build, resistances
- * above for a SHORT build). Each rung is tiny so a drastic adverse move neither
- * liquidates nor stops the position out prematurely; a single shared TP/SL is
- * attached to every rung.
+ * Two entry styles (see BuilderEntryStyle):
+ *   - momentum: pyramid with the trend — LONG rungs above price, SHORT rungs below.
+ *   - pullback: scale into dips/rips — LONG rungs below price, SHORT rungs above.
  */
 export const BUILDER = {
-  defaultBudget: 5, // default max usable margin (USDT) split across the ladder
-  defaultRungs: 5, // default number of ladder rungs
+  defaultBudget: 5,
+  defaultRungs: 5,
+  defaultEntryStyle: 'momentum' as const,
   minRungs: 2,
   maxRungs: 8,
   minLevelStrength: 0.3, // levels weaker than this are not used as rungs
