@@ -49,8 +49,15 @@ export function getBuilderShedJobs(): BuilderShedJob[] {
   return readJobs()
 }
 
-export function getActiveBuilderShedJobs(): BuilderShedJob[] {
-  return readJobs().filter((j) => j.status === 'pending' || j.status === 'shedding')
+export function getActiveBuilderShedJobs(symbol?: string): BuilderShedJob[] {
+  return readJobs().filter(
+    (j) =>
+      (j.status === 'pending' || j.status === 'shedding') && (symbol === undefined || j.symbol === symbol),
+  )
+}
+
+export function clearBuilderShedForSymbol(symbol: string): void {
+  writeJobs(readJobs().filter((j) => j.symbol !== symbol || j.status === 'done'))
 }
 
 export function registerBuilderShedJobs(inputs: BuilderShedJobInput[]): void {
@@ -74,8 +81,16 @@ function updateJob(id: string, patch: Partial<BuilderShedJob>): void {
 }
 
 function pruneOldJobs(): void {
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
-  writeJobs(readJobs().filter((j) => j.status === 'pending' || j.status === 'shedding' || j.createdAt > cutoff))
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000
+  writeJobs(
+    readJobs().filter(
+      (j) =>
+        j.status === 'pending' ||
+        j.status === 'shedding' ||
+        (j.status === 'done' && j.createdAt > cutoff) ||
+        (j.status === 'failed' && j.createdAt > cutoff),
+    ),
+  )
 }
 
 function normalizePositionSide(side: PendingPositionRaw['side']): 'LONG' | 'SHORT' | null {

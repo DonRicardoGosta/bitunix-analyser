@@ -19,13 +19,7 @@ export function builderLimitCanRest(
   return !builderLimitWouldCross(side, limitPrice, marketPrice)
 }
 
-/** Pullback rungs should rest immediately; momentum rungs may need deferred placement. */
-export function builderShouldDeferRung(
-  side: 'LONG' | 'SHORT',
-  entryStyle: BuilderEntryStyle,
-  limitPrice: number,
-  marketPrice: number,
-): boolean {
-  if (entryStyle !== 'momentum') return false
-  return builderLimitWouldCross(side, limitPrice, marketPrice)
+/** Momentum rungs above/below price use trigger entries; pullback uses resting limits. */
+export function builderUsesTriggerEntry(entryStyle: BuilderEntryStyle): boolean {
+  return entryStyle === 'momentum'
 }

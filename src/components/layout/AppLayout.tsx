@@ -4,6 +4,7 @@ import { useTickersPoll } from '../../hooks/useTickersPoll'
 import { useTickers } from '../../store/tickers'
 import { useMarket } from '../../store/market'
 import { useCredentials } from '../../store/credentials'
+import { useBuilderShedWatcher } from '../../features/analysis/setup/useBuilderShedWatcher'
 import { ConnectionDot } from '../ui/primitives'
 import { fmtPrice, fmtPct, pnlColor } from '../../lib/format'
 
@@ -15,6 +16,7 @@ const NAV = [
 
 export function AppLayout() {
   useTickersPoll()
+  useBuilderShedWatcher()
   const connected = useTickers((s) => s.connected)
   const symbol = useMarket((s) => s.symbol)
   const ticker = useTickers((s) => s.map[symbol])

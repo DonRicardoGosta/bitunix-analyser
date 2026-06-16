@@ -7,17 +7,17 @@ import {
   getBuilderShedJobs,
 } from './builderShed'
 import {
-  ensureBuilderDeferredPolling,
-  getActiveBuilderDeferredRungs,
-  getBuilderDeferredRungs,
-} from './builderDeferred'
+  ensureBuilderTriggerPolling,
+  getActiveBuilderTriggerJobs,
+  getBuilderTriggerJobs,
+} from './builderTrigger'
 
-/** Polls builder fill/shed jobs and deferred momentum rung placement. */
-export function useBuilderShedWatcher(): {
+/** Polls builder shed jobs and momentum trigger entries (app-wide). */
+export function useBuilderShedWatcher(symbol?: string): {
   activeCount: number
   failedCount: number
-  deferredCount: number
-  deferredFailedCount: number
+  triggerCount: number
+  triggerFailedCount: number
 } {
   const hasKeys = useCredentials((s) => s.hasKeys())
   const live = useCredentials((s) => s.liveTradingEnabled)
@@ -33,19 +33,19 @@ export function useBuilderShedWatcher(): {
       queryClient.invalidateQueries({ queryKey: ['pendingOrders'] })
     }
     const stopShed = ensureBuilderShedPolling(onTick)
-    const stopDeferred = ensureBuilderDeferredPolling(onTick)
+    const stopTrigger = ensureBuilderTriggerPolling(onTick)
     return () => {
       stopShed()
-      stopDeferred()
+      stopTrigger()
     }
   }, [hasKeys, live, queryClient])
 
-  const jobs = getBuilderShedJobs()
-  const deferred = getBuilderDeferredRungs()
+  const jobs = getBuilderShedJobs().filter((j) => !symbol || j.symbol === symbol)
+  const triggers = getBuilderTriggerJobs().filter((j) => !symbol || j.symbol === symbol)
   return {
-    activeCount: getActiveBuilderShedJobs().length,
+    activeCount: getActiveBuilderShedJobs(symbol).length,
     failedCount: jobs.filter((j) => j.status === 'failed').length,
-    deferredCount: getActiveBuilderDeferredRungs().length,
-    deferredFailedCount: deferred.filter((j) => j.status === 'failed').length,
+    triggerCount: getActiveBuilderTriggerJobs(symbol).length,
+    triggerFailedCount: triggers.filter((j) => j.status === 'failed').length,
   }
 }
