@@ -1,4 +1,5 @@
-import type { IChartApi, ISeriesApi } from 'lightweight-charts'
+import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts'
+import type { PriceZoneDef } from './chartTypes'
 
 /**
  * Decimal precision for the price axis, adapted to the coin's magnitude so that
@@ -94,4 +95,113 @@ export function positionOverlayLabels(
     it.el.style.top = `${y}px`
     it.el.style.right = `${baseRight + lane * laneStep}px`
   }
+}
+
+export interface OverlayZoneItem {
+  zone: PriceZoneDef
+  rectEl: HTMLDivElement
+  labelEl: HTMLDivElement
+}
+
+const ZONE_STYLES = {
+  support: {
+    fill: 'rgba(34,197,94,0.18)',
+    border: 'rgba(34,197,94,0.65)',
+    text: '#22c55e',
+  },
+  resistance: {
+    fill: 'rgba(239,68,68,0.18)',
+    border: 'rgba(239,68,68,0.65)',
+    text: '#ef4444',
+  },
+} as const
+
+/** Position HTML overlay S/R zone rectangles and their labels. */
+export function positionPriceZones(
+  series: ISeriesApi<'Candlestick'>,
+  chart: IChartApi,
+  items: OverlayZoneItem[],
+): void {
+  if (items.length === 0) return
+
+  const timeScale = chart.timeScale()
+
+  for (const { zone, rectEl, labelEl } of items) {
+    const yHigh = series.priceToCoordinate(zone.priceHigh)
+    const yLow = series.priceToCoordinate(zone.priceLow)
+    const xFrom = timeScale.timeToCoordinate(zone.timeFrom as UTCTimestamp)
+    const xTo = timeScale.timeToCoordinate(zone.timeTo as UTCTimestamp)
+
+    if (yHigh === null || yLow === null || xFrom === null || xTo === null) {
+      rectEl.style.top = '-9999px'
+      labelEl.style.top = '-9999px'
+      continue
+    }
+
+    const top = Math.min(yHigh, yLow)
+    const height = Math.abs(yLow - yHigh)
+    const left = Math.min(xFrom, xTo)
+    const width = Math.abs(xTo - xFrom)
+
+    if (width < 2 || height < 2) {
+      rectEl.style.top = '-9999px'
+      labelEl.style.top = '-9999px'
+      continue
+    }
+
+    rectEl.style.top = `${top}px`
+    rectEl.style.left = `${left}px`
+    rectEl.style.width = `${width}px`
+    rectEl.style.height = `${height}px`
+
+    labelEl.style.top = `${top + height + 4}px`
+    labelEl.style.left = `${left}px`
+  }
+}
+
+export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement; labelEl: HTMLDivElement } {
+  const style = ZONE_STYLES[zone.side]
+  const rectEl = document.createElement('div')
+  Object.assign(rectEl.style, {
+    position: 'absolute',
+    top: '-9999px',
+    left: '0px',
+    boxSizing: 'border-box',
+    background: style.fill,
+    border: `1px solid ${style.border}`,
+    borderRadius: '2px',
+    pointerEvents: 'none',
+    zIndex: '10',
+  } as Partial<CSSStyleDeclaration>)
+
+  const labelEl = document.createElement('div')
+  labelEl.style.cssText = `
+    position: absolute;
+    top: -9999px;
+    left: 0px;
+    pointer-events: none;
+    z-index: 11;
+    font: 700 10px Inter, sans-serif;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: ${style.text};
+    line-height: 1.3;
+  `
+  const title = document.createElement('div')
+  title.textContent = zone.label
+  labelEl.appendChild(title)
+  if (zone.subtitle) {
+    const sub = document.createElement('div')
+    sub.textContent = zone.subtitle
+    sub.style.cssText = `
+      margin-top: 1px;
+      font: 500 9px Inter, sans-serif;
+      letter-spacing: normal;
+      text-transform: none;
+      color: rgba(148,163,184,0.9);
+    `
+    labelEl.appendChild(sub)
+  }
+
+  return { rectEl, labelEl }
 }

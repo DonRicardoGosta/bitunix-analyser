@@ -13,10 +13,11 @@ import {
 import type { Candle } from '../../lib/candles'
 import { bollinger, ema, vwap } from '../../lib/indicators'
 import { applyAdaptivePriceFormat } from './chartLabelUtils'
-import type { PriceLineDef } from './chartTypes'
+import type { PriceLineDef, PriceZoneDef } from './chartTypes'
 import { chartOverlayStyle, chartShellStyle, usePriceLineLabels } from './usePriceLineLabels'
+import { usePriceZoneOverlay } from './usePriceZoneOverlay'
 
-export type { PriceLineDef } from './chartTypes'
+export type { PriceLineDef, PriceZoneDef } from './chartTypes'
 
 export interface OverlayToggles {
   ema9: boolean
@@ -31,6 +32,8 @@ interface Props {
   overlays: OverlayToggles
   /** Horizontal price lines (e.g. open-position entry/TP/SL). */
   priceLines?: PriceLineDef[]
+  /** Support/resistance zone overlays. */
+  priceZones?: PriceZoneDef[]
   height?: number
 }
 
@@ -41,7 +44,7 @@ interface LineDef {
   values: (number | null)[]
 }
 
-export function CandlesChart({ candles, overlays, priceLines = [], height = 460 }: Props) {
+export function CandlesChart({ candles, overlays, priceLines = [], priceZones = [], height = 460 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const overlayRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -94,6 +97,14 @@ export function CandlesChart({ candles, overlays, priceLines = [], height = 460 
       lineSeriesMap.clear()
     }
   }, [])
+
+  usePriceZoneOverlay({
+    chartRef,
+    seriesRef: candleRef,
+    overlayRef,
+    zones: priceZones,
+    layoutKey: candles,
+  })
 
   usePriceLineLabels({
     chartRef,

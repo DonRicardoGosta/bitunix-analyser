@@ -3,13 +3,18 @@ import clsx from 'clsx'
 import { useMarket } from '../../../store/market'
 import { useTickers } from '../../../store/tickers'
 import { useCandles } from '../useCandles'
+import { useOrderBook } from '../useOrderBook'
 import { usePendingPositions, usePositionTpsl } from '../../stats/useStats'
 import { buildTpslMap, positionOutcome } from '../../stats/positions'
+import { computeKeyLevels } from '../setup/engine'
+import { pickChartZones } from '../chartLevels'
 import { CandlesChart, type OverlayToggles } from '../../../components/charts/CandlesChart'
 import type { PriceLineDef } from '../../../components/charts/SetupChart'
 import { RsiPanel, MacdPanel, StochRsiPanel } from '../IndicatorPanels'
 import { Panel, Spinner, ErrorNote } from '../../../components/ui/primitives'
 import { toNum } from '../../../lib/format'
+import { atr } from '../../../lib/indicators'
+import type { Candle } from '../../../lib/candles'
 
 const OVERLAY_LABELS: { key: keyof OverlayToggles; label: string }[] = [
   { key: 'ema9', label: 'EMA 9' },
@@ -18,6 +23,16 @@ const OVERLAY_LABELS: { key: keyof OverlayToggles; label: string }[] = [
   { key: 'bb', label: 'Bollinger' },
   { key: 'vwap', label: 'VWAP' },
 ]
+
+function lastAtr(candles: Candle[]): number {
+  const series = atr(candles, 14)
+  for (let i = series.length - 1; i >= 0; i--) {
+    const v = series[i]
+    if (v !== null && Number.isFinite(v)) return v
+  }
+  const price = candles[candles.length - 1]?.close ?? 0
+  return price * 0.01
+}
 
 export function ChartTab() {
   const symbol = useMarket((s) => s.symbol)
@@ -33,8 +48,10 @@ export function ChartTab() {
   })
   const [subPanels, setSubPanels] = useState({ rsi: true, macd: true, stoch: false })
   const [showPositions, setShowPositions] = useState(true)
+  const [showZones, setShowZones] = useState(true)
 
   const { candles, status, error } = useCandles(symbol, interval, priceType)
+  const { book } = useOrderBook(symbol)
 
   const pending = usePendingPositions()
   const tpsl = usePositionTpsl()
@@ -46,9 +63,18 @@ export function ChartTab() {
     [pending.data, symbol],
   )
 
+  const lastPrice = tickers[symbol]?.last ?? (candles.length ? candles[candles.length - 1].close : 0)
+
+  const priceZones = useMemo(() => {
+    if (!showZones || candles.length < 30) return []
+    const levels = computeKeyLevels(candles, book, lastPrice)
+    const atrVal = lastAtr(candles)
+    return pickChartZones(levels, candles, lastPrice, atrVal)
+  }, [showZones, candles, book, lastPrice])
+
   const positionLines = useMemo<PriceLineDef[]>(() => {
     if (!showPositions || mine.length === 0) return []
-    const mark = tickers[symbol]?.last ?? (candles.length ? candles[candles.length - 1].close : 0)
+    const mark = lastPrice
     const out: PriceLineDef[] = []
     mine.forEach((p, i) => {
       const o = positionOutcome(p, tpslMap[p.positionId], mark)
@@ -61,7 +87,7 @@ export function ChartTab() {
       if (liq > 0) out.push({ price: liq, color: '#f59e0b', title: `${tag} Liq`, dashed: true })
     })
     return out
-  }, [showPositions, mine, tpslMap, tickers, symbol, candles])
+  }, [showPositions, mine, tpslMap, lastPrice])
 
   return (
     <div className="flex flex-col gap-4">
@@ -84,6 +110,18 @@ export function ChartTab() {
                 {o.label}
               </button>
             ))}
+            <span className="mx-1 h-4 w-px bg-zinc-800" />
+            <button
+              onClick={() => setShowZones((v) => !v)}
+              className={clsx(
+                'rounded-md px-2 py-0.5 text-[11px] font-medium',
+                showZones
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'border border-zinc-800 text-zinc-500 hover:text-zinc-300',
+              )}
+            >
+              S/R zones
+            </button>
             {mine.length > 0 && (
               <>
                 <span className="mx-1 h-4 w-px bg-zinc-800" />
@@ -106,7 +144,13 @@ export function ChartTab() {
         {status === 'loading' && <Spinner label="Loading candles…" />}
         {status === 'error' && <ErrorNote error={error} />}
         <div className={status === 'loading' ? 'hidden' : ''}>
-          <CandlesChart candles={candles} overlays={overlays} priceLines={positionLines} height={460} />
+          <CandlesChart
+            candles={candles}
+            overlays={overlays}
+            priceLines={positionLines}
+            priceZones={priceZones}
+            height={460}
+          />
         </div>
       </Panel>
 

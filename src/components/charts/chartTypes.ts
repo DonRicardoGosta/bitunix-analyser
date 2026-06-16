@@ -14,3 +14,15 @@ export interface ChartMarker {
   shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square'
   text?: string
 }
+
+export interface PriceZoneDef {
+  priceLow: number
+  priceHigh: number
+  /** UNIX timestamp in seconds — zone left edge. */
+  timeFrom: number
+  /** UNIX timestamp in seconds — zone right edge. */
+  timeTo: number
+  side: 'support' | 'resistance'
+  label: string
+  subtitle?: string
+}

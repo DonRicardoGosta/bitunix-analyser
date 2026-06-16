@@ -536,6 +536,12 @@ function buildPlan(
 
 // ---- Entry point ----
 
+/** Confluence support/resistance levels from candles, volume profile, indicators, and order book. */
+export function computeKeyLevels(candles: Candle[], book: ParsedBook | null, price?: number): KeyLevel[] {
+  const ref = price ?? (candles.length ? candles[candles.length - 1].close : 0)
+  return buildLevels(candles, book, ref)
+}
+
 /** Higher-timeframe trend (-1..+1) from a separate candle series, or null. */
 function htfTrend(htfCandles: Candle[] | undefined): number | null {
   if (!htfCandles || htfCandles.length < 50) return null
