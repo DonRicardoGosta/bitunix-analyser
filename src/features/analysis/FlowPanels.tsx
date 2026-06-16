@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
 import { EChart } from '../../components/charts/EChart'
-import { baseTooltip, darkChart } from '../../components/charts/chartTheme'
+import { baseTooltip, darkChart, referenceMarkLine } from '../../components/charts/chartTheme'
 import { useAnalysisLive } from '../../store/analysisLive'
 import { volumeProfile } from './volumeProfile'
 import type { Candle } from '../../lib/candles'
@@ -36,12 +36,7 @@ export function CvdChart() {
           data: cvdHistory.map((p) => [p.time, p.cvd]),
           lineStyle: { color: darkChart.accent, width: 1.5 },
           areaStyle: { color: 'rgba(34,211,238,0.10)' },
-          markLine: {
-            symbol: 'none',
-            silent: true,
-            data: [{ yAxis: 0, lineStyle: { color: 'rgba(148,163,184,0.35)', type: 'dashed' } }],
-            label: { show: false },
-          },
+          markLine: referenceMarkLine([{ yAxis: 0, label: 'CVD 0', color: 'rgba(148,163,184,0.85)' }]),
         },
       ],
     }

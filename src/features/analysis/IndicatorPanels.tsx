@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
 import { EChart } from '../../components/charts/EChart'
-import { baseTooltip, darkChart } from '../../components/charts/chartTheme'
+import { baseTooltip, darkChart, referenceMarkLine } from '../../components/charts/chartTheme'
 import type { Candle } from '../../lib/candles'
 import { macd, rsi, stochRsi } from '../../lib/indicators'
 
@@ -46,15 +46,10 @@ export function RsiPanel({ candles }: { candles: Candle[] }) {
           showSymbol: false,
           data: pair(candles, r),
           lineStyle: { color: darkChart.accent, width: 1.5 },
-          markLine: {
-            symbol: 'none',
-            silent: true,
-            data: [
-              { yAxis: 70, lineStyle: { color: 'rgba(239,68,68,0.5)', type: 'dashed' } },
-              { yAxis: 30, lineStyle: { color: 'rgba(34,197,94,0.5)', type: 'dashed' } },
-            ],
-            label: { show: false },
-          },
+          markLine: referenceMarkLine([
+            { yAxis: 70, label: 'Overbought 70', color: 'rgba(239,68,68,0.85)' },
+            { yAxis: 30, label: 'Oversold 30', color: 'rgba(34,197,94,0.85)' },
+          ]),
         },
       ],
     }
@@ -132,15 +127,10 @@ export function StochRsiPanel({ candles }: { candles: Candle[] }) {
           showSymbol: false,
           data: pair(candles, s.d),
           lineStyle: { color: darkChart.violet, width: 1.3 },
-          markLine: {
-            symbol: 'none',
-            silent: true,
-            data: [
-              { yAxis: 80, lineStyle: { color: 'rgba(239,68,68,0.4)', type: 'dashed' } },
-              { yAxis: 20, lineStyle: { color: 'rgba(34,197,94,0.4)', type: 'dashed' } },
-            ],
-            label: { show: false },
-          },
+          markLine: referenceMarkLine([
+            { yAxis: 80, label: 'Overbought 80', color: 'rgba(239,68,68,0.85)' },
+            { yAxis: 20, label: 'Oversold 20', color: 'rgba(34,197,94,0.85)' },
+          ]),
         },
       ],
     }

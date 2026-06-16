@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
 import { EChart } from '../../components/charts/EChart'
-import { baseTooltip, darkChart } from '../../components/charts/chartTheme'
+import { baseTooltip, darkChart, referenceMarkLine } from '../../components/charts/chartTheme'
 import type { LongShortPoint, OpenInterestPoint, TakerVolumePoint } from '../../lib/binance/types'
 import type { PricePoint } from '../../lib/binance/rest'
 import { useAnalysisLive } from '../../store/analysisLive'
@@ -107,12 +107,7 @@ export function LongShortChart({
           showSymbol: false,
           data: global.map((p) => [toNum(p.timestamp), toNum(p.longShortRatio)]),
           lineStyle: { color: darkChart.up, width: 1.4 },
-          markLine: {
-            symbol: 'none',
-            silent: true,
-            data: [{ yAxis: 1, lineStyle: { color: 'rgba(148,163,184,0.4)', type: 'dashed' } }],
-            label: { show: false },
-          },
+          markLine: referenceMarkLine([{ yAxis: 1, label: 'Neutral 1.0', color: 'rgba(148,163,184,0.85)' }]),
         },
         {
           name: 'Top traders L/S',
@@ -156,12 +151,7 @@ export function TakerFlowChart({ taker, price }: { taker: TakerVolumePoint[]; pr
               itemStyle: { color: r >= 1 ? 'rgba(34,197,94,0.6)' : 'rgba(239,68,68,0.6)' },
             }
           }),
-          markLine: {
-            symbol: 'none',
-            silent: true,
-            data: [{ yAxis: 1, lineStyle: { color: 'rgba(148,163,184,0.4)', type: 'dashed' } }],
-            label: { show: false },
-          },
+          markLine: referenceMarkLine([{ yAxis: 1, label: 'Neutral 1.0', color: 'rgba(148,163,184,0.85)' }]),
         },
         priceSeries(price),
       ],

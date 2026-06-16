@@ -6,15 +6,17 @@ import {
   LineSeries,
   ColorType,
   CrosshairMode,
-  LineStyle,
   type IChartApi,
-  type IPriceLine,
   type ISeriesApi,
   type UTCTimestamp,
 } from 'lightweight-charts'
 import type { Candle } from '../../lib/candles'
 import { bollinger, ema, vwap } from '../../lib/indicators'
-import type { PriceLineDef } from './SetupChart'
+import { applyAdaptivePriceFormat } from './chartLabelUtils'
+import type { PriceLineDef } from './chartTypes'
+import { chartOverlayStyle, chartShellStyle, usePriceLineLabels } from './usePriceLineLabels'
+
+export type { PriceLineDef } from './chartTypes'
 
 export interface OverlayToggles {
   ema9: boolean
@@ -41,11 +43,11 @@ interface LineDef {
 
 export function CandlesChart({ candles, overlays, priceLines = [], height = 460 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const overlayRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const lineRefs = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
-  const priceLinesRef = useRef<IPriceLine[]>([])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -90,32 +92,17 @@ export function CandlesChart({ candles, overlays, priceLines = [], height = 460 
       candleRef.current = null
       volumeRef.current = null
       lineSeriesMap.clear()
-      priceLinesRef.current = []
     }
   }, [])
 
-  // Reconcile horizontal price lines (open-position entry/TP/SL).
-  useEffect(() => {
-    const series = candleRef.current
-    if (!series) return
-    for (const pl of priceLinesRef.current) series.removePriceLine(pl)
-    priceLinesRef.current = []
-    for (const def of priceLines) {
-      if (!Number.isFinite(def.price) || def.price <= 0) continue
-      priceLinesRef.current.push(
-        series.createPriceLine({
-          price: def.price,
-          color: def.color,
-          lineWidth: def.width ?? 1,
-          lineStyle: def.dashed ? LineStyle.Dashed : LineStyle.Solid,
-          axisLabelVisible: true,
-          title: def.title,
-        }),
-      )
-    }
-  }, [priceLines])
+  usePriceLineLabels({
+    chartRef,
+    seriesRef: candleRef,
+    overlayRef,
+    lines: priceLines,
+    layoutKey: candles,
+  })
 
-  // Update candle + volume data.
   useEffect(() => {
     const candleSeries = candleRef.current
     const volumeSeries = volumeRef.current
@@ -137,9 +124,11 @@ export function CandlesChart({ candles, overlays, priceLines = [], height = 460 
         color: c.close >= c.open ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)',
       })),
     )
+
+    const ref = candles.length ? candles[candles.length - 1].close : 0
+    applyAdaptivePriceFormat(candleSeries, ref)
   }, [candles])
 
-  // Reconcile overlay line series with the current toggles + data.
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
@@ -158,14 +147,12 @@ export function CandlesChart({ candles, overlays, priceLines = [], height = 460 
     }
 
     const wanted = new Set(defs.map((d) => d.key))
-    // Remove series no longer wanted.
     for (const [key, series] of lineRefs.current.entries()) {
       if (!wanted.has(key)) {
         chart.removeSeries(series)
         lineRefs.current.delete(key)
       }
     }
-    // Add / update wanted series.
     for (const def of defs) {
       let series = lineRefs.current.get(def.key)
       if (!series) {
@@ -189,5 +176,10 @@ export function CandlesChart({ candles, overlays, priceLines = [], height = 460 
     }
   }, [candles, overlays])
 
-  return <div ref={containerRef} style={{ width: '100%', height }} />
+  return (
+    <div style={chartShellStyle(height)}>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <div ref={overlayRef} style={chartOverlayStyle()} />
+    </div>
+  )
 }
