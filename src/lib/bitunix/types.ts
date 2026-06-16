@@ -75,6 +75,8 @@ export interface PlaceOrderParams {
   qty: string
   side: OrderSide
   tradeSide?: TradeSide
+  /** Required when tradeSide is CLOSE in hedge mode. */
+  positionId?: string
   orderType: OrderType
   price?: string
   effect?: 'IOC' | 'FOK' | 'GTC' | 'POST_ONLY'
@@ -93,6 +95,30 @@ export interface PlaceOrderParams {
 export interface OrderResult {
   orderId?: string
   clientId?: string
+}
+
+/** Resting or historical futures order (trade/get_*_orders). */
+export interface OrderRaw {
+  orderId: string
+  symbol: string
+  qty: string
+  tradeQty: string
+  price?: string
+  side: OrderSide | string
+  orderType: OrderType | string
+  status: string
+  clientId?: string
+  reduceOnly?: boolean
+  positionMode?: string
+  marginMode?: string
+  leverage?: number
+  ctime?: number
+  mtime?: number
+}
+
+export interface OrderListPage {
+  orderList: OrderRaw[]
+  total: number
 }
 
 /** Modify an existing standalone TP/SL trigger order (by its order id). */

@@ -19,6 +19,7 @@ import type {
   MarginMode,
   ModifyTpslOrderParams,
   OrderResult,
+  OrderListPage,
   PendingPositionRaw,
   PlaceOrderParams,
   PlaceTpslOrderParams,
@@ -214,6 +215,33 @@ export function getHistoryTrades(params?: {
   limit?: number
 }): Promise<HistoryTradePage> {
   return privateGet<HistoryTradePage>('/api/v1/futures/trade/get_history_trades', params)
+}
+
+export function getPendingOrders(params?: {
+  symbol?: string
+  orderId?: string
+  clientId?: string
+  status?: string
+  startTime?: number
+  endTime?: number
+  skip?: number
+  limit?: number
+}): Promise<OrderListPage> {
+  return privateGet<OrderListPage>('/api/v1/futures/trade/get_pending_orders', params)
+}
+
+export function getHistoryOrders(params?: {
+  symbol?: string
+  orderId?: string
+  clientId?: string
+  status?: string
+  type?: string
+  startTime?: number
+  endTime?: number
+  skip?: number
+  limit?: number
+}): Promise<OrderListPage> {
+  return privateGet<OrderListPage>('/api/v1/futures/trade/get_history_orders', params)
 }
 
 // ---- Trading (order placement & account settings) ----

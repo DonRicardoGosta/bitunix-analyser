@@ -8,11 +8,13 @@ import {
   marginFromQty,
   qtyFromMargin,
   roundToPrecision,
+  floorToPrecision,
   type OrderProjection,
   type BuilderRungSizing,
   type TpMode,
 } from './order'
-import { BUILDER } from './config'
+import { registerBuilderShedJobs, ensureBuilderShedPolling, type BuilderShedJobInput } from './builderShed'
+import { useBuilderShedWatcher } from './useBuilderShedWatcher'
 import { useSymbolSpecs } from '../useSymbolSpecs'
 import { useCredentials } from '../../../store/credentials'
 import { useUiPrefs, type TicketSizingMode, type TradeMode } from '../../../store/uiPrefs'
@@ -51,7 +53,7 @@ interface Props {
 type SubmitState =
   | { kind: 'idle' }
   | { kind: 'submitting'; step: string }
-  | { kind: 'done'; orderIds: string[] }
+  | { kind: 'done'; orderIds: string[]; note?: string }
   | { kind: 'error'; message: string; orderIds: string[] }
 
 export function OrderTicket({
@@ -80,6 +82,7 @@ export function OrderTicket({
   const marginCoin = useCredentials((s) => s.marginCoin)
   const hasKeys = useCredentials((s) => s.hasKeys())
   const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
+  const { activeCount: shedActiveCount, failedCount: shedFailedCount } = useBuilderShedWatcher()
 
   // Persisted ticket settings (remembered across navigation/reloads).
   const leverage = useUiPrefs((s) => s.ticketLeverage)
@@ -284,7 +287,7 @@ export function OrderTicket({
   const builderNotices = useMemo<string[]>(() => {
     if (!isBuilder || !builderUsesTrick) return []
     return [
-      'Some rungs are below the exchange minimum: each opens a larger order and immediately sheds the excess with a reduce-only order, so the net stays tiny. This briefly uses extra margin when a rung fills.',
+      'Some rungs are below the exchange minimum: each opens at the exchange minimum plus your target, then auto-sheds the excess via a market close when the limit fills (hedge mode requires positionId — shed orders cannot be pre-placed).',
     ]
   }, [isBuilder, builderUsesTrick])
 
@@ -420,15 +423,14 @@ export function OrderTicket({
     }
   }
 
-  // Places the laddered builder orders in advance: a resting LIMIT open order at
-  // each rung (with the shared TP/SL), plus — for sub-minimum rungs — a paired
-  // reduce-only LIMIT order priced one tick into profit so it sheds the excess
-  // right after the open fills, leaving only the tiny target exposure.
+  // Places resting LIMIT open orders at each rung (shared TP/SL). Sub-minimum rungs
+  // register auto-shed jobs — excess is closed with positionId after each fill.
   async function doSubmitBuilder() {
     setShowConfirm(false)
     const active = builderRungSizings.filter((r) => r.openQty > 0)
     if (active.length === 0) return
     const orderIds: string[] = []
+    const shedInputs: BuilderShedJobInput[] = []
     try {
       setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
       let hedge = positionMode === 'HEDGE'
@@ -452,21 +454,20 @@ export function OrderTicket({
       const isLong = builder.side === 'LONG'
       const tp = String(roundToPrecision(builder.tp, spec.quotePrecision))
       const sl = String(roundToPrecision(builder.stop, spec.quotePrecision))
-      const tickOffset = (1 / Math.pow(10, spec.quotePrecision)) * BUILDER.tickOffsetTicks
+      const total = active.length
 
-      const total = active.reduce((a, r) => a + 1 + (r.usesTrick && r.shedQty > 0 ? 1 : 0), 0)
-      let placed = 0
-
-      for (const r of active) {
-        placed++
-        setSubmit({ kind: 'submitting', step: `Placing rung ${placed}/${total}…` })
+      for (let i = 0; i < active.length; i++) {
+        const r = active[i]
+        setSubmit({ kind: 'submitting', step: `Placing rung ${i + 1}/${total}…` })
+        const clientId = `builder-${symbol}-${i}-${Date.now()}`
         const openParams: PlaceOrderParams = {
           symbol,
           side: isLong ? 'BUY' : 'SELL',
           orderType: 'LIMIT',
           effect: 'GTC',
           price: String(roundToPrecision(r.price, spec.quotePrecision)),
-          qty: String(r.openQty),
+          qty: String(floorToPrecision(r.openQty, spec.basePrecision)),
+          clientId,
           tpPrice: tp,
           tpStopType: 'LAST_PRICE',
           tpOrderType: 'MARKET',
@@ -476,29 +477,43 @@ export function OrderTicket({
         }
         if (hedge) openParams.tradeSide = 'OPEN'
         const openRes = await placeOrder(openParams)
-        if (openRes?.orderId) orderIds.push(openRes.orderId)
-
-        if (r.usesTrick && r.shedQty > 0) {
-          placed++
-          setSubmit({ kind: 'submitting', step: `Shedding rung ${placed}/${total}…` })
-          const shedPrice = isLong ? r.price + tickOffset : r.price - tickOffset
-          const shedParams: PlaceOrderParams = {
-            symbol,
-            side: isLong ? 'SELL' : 'BUY',
-            orderType: 'LIMIT',
-            effect: 'GTC',
-            price: String(roundToPrecision(shedPrice, spec.quotePrecision)),
-            qty: String(r.shedQty),
+        if (openRes?.orderId) {
+          orderIds.push(openRes.orderId)
+          if (r.usesTrick && r.shedQty > 0) {
+            shedInputs.push({
+              orderId: openRes.orderId,
+              clientId,
+              symbol,
+              side: builder.side,
+              shedQty: floorToPrecision(r.shedQty, spec.basePrecision),
+              basePrecision: spec.basePrecision,
+              rungIndex: i,
+            })
           }
-          if (hedge) shedParams.tradeSide = 'CLOSE'
-          else shedParams.reduceOnly = true
-          const shedRes = await placeOrder(shedParams)
-          if (shedRes?.orderId) orderIds.push(shedRes.orderId)
         }
       }
-      setSubmit({ kind: 'done', orderIds })
+
+      if (shedInputs.length) {
+        registerBuilderShedJobs(shedInputs)
+        ensureBuilderShedPolling()
+      }
+
+      const shedNote =
+        shedInputs.length > 0
+          ? ` Auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'} — excess closes on fill.`
+          : undefined
+      setSubmit({ kind: 'done', orderIds, note: shedNote })
     } catch (e) {
-      setSubmit({ kind: 'error', message: e instanceof Error ? e.message : String(e), orderIds })
+      if (shedInputs.length) {
+        registerBuilderShedJobs(shedInputs)
+        ensureBuilderShedPolling()
+      }
+      const base = e instanceof Error ? e.message : String(e)
+      const partial =
+        orderIds.length > 0
+          ? ` ${orderIds.length} open order${orderIds.length === 1 ? '' : 's'} placed${shedInputs.length ? `; auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'}` : ''}.`
+          : ''
+      setSubmit({ kind: 'error', message: `${base}${partial}`, orderIds })
     }
   }
 
@@ -971,6 +986,17 @@ export function OrderTicket({
 
           {isSingle && <EntryQualityCard quality={entryQuality} side={side} />}
 
+          {isBuilder && shedActiveCount > 0 && (
+            <p className="rounded-md bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
+              Auto-shed watching {shedActiveCount} rung{shedActiveCount === 1 ? '' : 's'} — excess closes via market when each limit fills.
+            </p>
+          )}
+          {isBuilder && shedFailedCount > 0 && (
+            <p className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">
+              Auto-shed failed on {shedFailedCount} rung{shedFailedCount === 1 ? '' : 's'} — trim positions manually if needed.
+            </p>
+          )}
+
           {both ? (
             <button
               onClick={() => setShowConfirm(true)}
@@ -1025,6 +1051,7 @@ export function OrderTicket({
           {submit.kind === 'done' && (
             <div className="rounded-md bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
               Order placed. {submit.orderIds.length ? `IDs: ${submit.orderIds.join(', ')}` : ''}
+              {submit.note ? ` ${submit.note}` : ''}
             </div>
           )}
           {submit.kind === 'error' && (
@@ -1631,7 +1658,7 @@ function BuilderProjection({
               <tr className="text-left text-[10px] uppercase tracking-wide text-zinc-500">
                 <th className="py-1 pr-2">Price</th>
                 <th className="py-1 pr-2 text-right">Open</th>
-                <th className="py-1 pr-2 text-right">Shed</th>
+                <th className="py-1 pr-2 text-right">Auto-shed</th>
                 <th className="py-1 text-right">Net</th>
               </tr>
             </thead>
@@ -1705,7 +1732,7 @@ function BuilderConfirmModal({
 }) {
   const isLong = plan.side === 'LONG'
   const active = rungs.filter((r) => r.openQty > 0)
-  const orderCount = active.reduce((a, r) => a + 1 + (r.usesTrick && r.shedQty > 0 ? 1 : 0), 0)
+  const trickCount = active.filter((r) => r.usesTrick && r.shedQty > 0).length
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
       <div
@@ -1714,9 +1741,12 @@ function BuilderConfirmModal({
       >
         <h3 className="text-base font-semibold text-zinc-100">Confirm position builder · {symbol}</h3>
         <p className="mt-1 text-xs text-amber-300/80">
-          This places {orderCount} resting order{orderCount === 1 ? '' : 's'} on Bitunix futures (
-          {marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x, hedge mode): a Build {plan.side} ladder of{' '}
-          {active.length} limit rungs, each carrying the shared TP and stop.
+          This places {active.length} resting limit order{active.length === 1 ? '' : 's'} on Bitunix futures (
+          {marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x, hedge mode): a Build {plan.side} ladder, each
+          with the shared TP and stop.
+          {trickCount > 0
+            ? ` ${trickCount} rung${trickCount === 1 ? '' : 's'} will auto-shed the exchange minimum on fill (not pre-placed).`
+            : ''}
         </p>
         {!plan.valid && (
           <p className="mt-2 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
@@ -1739,7 +1769,7 @@ function BuilderConfirmModal({
               <span className={clsx('tabular', isLong ? 'text-emerald-300' : 'text-rose-300')}>{fmtPrice(r.price)}</span>
               <span className="tabular text-zinc-400">
                 open {fmtCompact(r.openQty, 4)}
-                {r.usesTrick ? ` · shed ${fmtCompact(r.shedQty, 4)}` : ''} · net {fmtCompact(r.netQty, 4)}
+                {r.usesTrick ? ` · auto-shed ${fmtCompact(r.shedQty, 4)} on fill` : ''} · net {fmtCompact(r.netQty, 4)}
               </span>
             </div>
           ))}

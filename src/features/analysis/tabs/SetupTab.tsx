@@ -24,6 +24,7 @@ import {
   type MarketContext,
 } from '../setup/engine'
 import { OrderTicket } from '../setup/OrderTicket'
+import { useBuilderShedWatcher } from '../setup/useBuilderShedWatcher'
 import { SetupChart, type PriceLineDef, type ChartMarker } from '../../../components/charts/SetupChart'
 import { Panel, Spinner, EmptyState, Badge } from '../../../components/ui/primitives'
 import { BinanceNote } from '../controls'
@@ -68,6 +69,7 @@ export function SetupTab() {
   const marketContext = useMemo<MarketContext>(() => btcMarketContext(btc.data), [btc.data])
   const account = useAccount()
   const lastPrice = useTickers((s) => s.map[symbol]?.last ?? 0)
+  useBuilderShedWatcher()
 
   const [tradeSide, setTradeSideState] = useState<'LONG' | 'SHORT'>('LONG')
   const [showLevels, setShowLevels] = useState(true)
