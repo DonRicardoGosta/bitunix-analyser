@@ -1,8 +1,10 @@
 import { useEffect, useRef, type CSSProperties, type RefObject } from 'react'
 import { LineStyle, type IChartApi, type IPriceLine, type ISeriesApi } from 'lightweight-charts'
 import { dimColor, positionOverlayLabels, solidColor } from './chartLabelUtils'
-import type { PriceLineDef } from './chartTypes'
-import { fmtPrice } from '../../lib/format'
+import type { PriceLineDef, PriceLineDragMeta } from './chartTypes'
+import { roundToPrecision } from '../../features/analysis/setup/order'
+import { positionPnlAt, validateTpslTriggerPrice } from '../../features/stats/positions'
+import { fmtPrice, fmtSignedUsd } from '../../lib/format'
 
 interface ChartLabel {
   price: number
@@ -11,6 +13,16 @@ interface ChartLabel {
   baseStyle: LineStyle
   line: IPriceLine
   el: HTMLDivElement
+  titleEl: HTMLDivElement
+  subtitleEl: HTMLDivElement | null
+  titleText: string
+  draggable?: PriceLineDragMeta
+}
+
+interface DragState {
+  item: ChartLabel
+  fromPrice: number
+  borderColor: string
 }
 
 interface UsePriceLineLabelsArgs {
@@ -20,9 +32,22 @@ interface UsePriceLineLabelsArgs {
   lines: PriceLineDef[]
   /** Re-sync labels when candle data changes (price scale / autoscale). */
   layoutKey?: unknown
+  onTpslDragEnd?: (payload: {
+    meta: PriceLineDragMeta
+    fromPrice: number
+    toPrice: number
+  }) => void
+  quotePrecision?: number
+  /** Keep label pinned to its price line while confirm modal is open. */
+  pinnedTpslOrderId?: string | null
+  pinnedTpslKind?: 'tp' | 'sl' | null
 }
 
-function createLabelElement(def: PriceLineDef): HTMLDivElement {
+function createLabelElement(def: PriceLineDef): {
+  el: HTMLDivElement
+  titleEl: HTMLDivElement
+  subtitleEl: HTMLDivElement | null
+} {
   const solid = solidColor(def.color)
   const el = document.createElement('div')
   Object.assign(el.style, {
@@ -40,24 +65,34 @@ function createLabelElement(def: PriceLineDef): HTMLDivElement {
     padding: '1px 6px',
     whiteSpace: 'nowrap',
     boxShadow: '0 1px 3px rgba(0,0,0,0.7)',
-    cursor: 'pointer',
+    cursor: def.draggable ? 'ns-resize' : 'pointer',
     pointerEvents: 'auto',
   } as Partial<CSSStyleDeclaration>)
-  const title = document.createElement('div')
-  title.textContent = `${def.title} ${fmtPrice(def.price)}`
-  el.appendChild(title)
+  const titleEl = document.createElement('div')
+  titleEl.textContent = `${def.title} ${fmtPrice(def.price)}`
+  el.appendChild(titleEl)
+  let subtitleEl: HTMLDivElement | null = null
   if (def.subtitle) {
-    const sub = document.createElement('div')
-    sub.textContent = def.subtitle
-    sub.style.cssText = `
+    subtitleEl = document.createElement('div')
+    subtitleEl.textContent = def.subtitle
+    subtitleEl.style.cssText = `
       margin-top: 1px;
       font: 500 9px Inter, sans-serif;
       letter-spacing: normal;
       color: rgba(148,163,184,0.9);
     `
-    el.appendChild(sub)
+    el.appendChild(subtitleEl)
   }
-  return el
+  return { el, titleEl, subtitleEl }
+}
+
+function updateLabelPrice(item: ChartLabel, price: number, subtitle?: string): void {
+  item.price = price
+  item.titleEl.textContent = `${item.titleText} ${fmtPrice(price)}`
+  if (item.subtitleEl && subtitle !== undefined) {
+    item.subtitleEl.textContent = subtitle
+  }
+  item.line.applyOptions({ price })
 }
 
 /**
@@ -70,9 +105,31 @@ export function usePriceLineLabels({
   overlayRef,
   lines,
   layoutKey,
+  onTpslDragEnd,
+  quotePrecision,
+  pinnedTpslOrderId,
+  pinnedTpslKind,
 }: UsePriceLineLabelsArgs): void {
   const itemsRef = useRef<ChartLabel[]>([])
   const rafRef = useRef<number | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const onDragEndRef = useRef(onTpslDragEnd)
+  const quotePrecisionRef = useRef(quotePrecision)
+  const pinnedOrderIdRef = useRef(pinnedTpslOrderId)
+  const pinnedKindRef = useRef(pinnedTpslKind)
+
+  useEffect(() => {
+    onDragEndRef.current = onTpslDragEnd
+  }, [onTpslDragEnd])
+
+  useEffect(() => {
+    quotePrecisionRef.current = quotePrecision
+  }, [quotePrecision])
+
+  useEffect(() => {
+    pinnedOrderIdRef.current = pinnedTpslOrderId
+    pinnedKindRef.current = pinnedTpslKind
+  }, [pinnedTpslOrderId, pinnedTpslKind])
 
   useEffect(() => {
     const loop = () => {
@@ -81,11 +138,25 @@ export function usePriceLineLabels({
       const chart = chartRef.current
       const overlay = overlayRef.current
       if (!series || !chart || !overlay) return
+
+      const drag = dragRef.current
+      const pinnedOrderId = pinnedOrderIdRef.current
+      const pinnedKind = pinnedKindRef.current
+
       positionOverlayLabels(
         series,
         chart,
         overlay,
-        itemsRef.current.map((l) => ({ price: l.price, el: l.el })),
+        itemsRef.current.map((l) => ({
+          price: l.price,
+          el: l.el,
+          pinToPrice:
+            l === drag?.item ||
+            (!!pinnedOrderId &&
+              !!pinnedKind &&
+              l.draggable?.orderId === pinnedOrderId &&
+              l.draggable.kind === pinnedKind),
+        })),
       )
     }
     rafRef.current = requestAnimationFrame(loop)
@@ -105,10 +176,12 @@ export function usePriceLineLabels({
       it.el.remove()
     }
     itemsRef.current = []
+    dragRef.current = null
 
     const created: ChartLabel[] = []
 
     const emphasize = (target: ChartLabel) => {
+      if (dragRef.current) return
       for (const it of created) {
         if (it === target) {
           it.line.applyOptions({ color: solidColor(it.color), lineWidth: 3, lineStyle: LineStyle.Solid })
@@ -123,6 +196,7 @@ export function usePriceLineLabels({
       }
     }
     const reset = () => {
+      if (dragRef.current) return
       for (const it of created) {
         it.line.applyOptions({ color: it.color, lineWidth: it.baseWidth, lineStyle: it.baseStyle })
         it.el.style.opacity = ''
@@ -130,6 +204,78 @@ export function usePriceLineLabels({
         it.el.style.borderColor = solidColor(it.color)
         it.el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.7)'
       }
+    }
+
+    const endDrag = (commit: boolean) => {
+      const drag = dragRef.current
+      if (!drag) return
+
+      const { item, fromPrice, borderColor } = drag
+      dragRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+
+      const meta = item.draggable
+      if (!meta) return
+
+      const toPrice = item.price
+      const validationError = validateTpslTriggerPrice(meta.side, meta.kind, toPrice, meta.entry)
+      const changed = Math.abs(toPrice - fromPrice) > 1e-12
+
+      if (!commit || validationError || !changed) {
+        const pnl = positionPnlAt(meta.side, meta.entry, fromPrice, meta.qty)
+        updateLabelPrice(
+          item,
+          fromPrice,
+          Number.isFinite(pnl) ? fmtSignedUsd(pnl) : undefined,
+        )
+        item.el.style.borderColor = borderColor
+        item.el.style.borderLeftColor = borderColor
+        return
+      }
+
+      onDragEndRef.current?.({ meta, fromPrice, toPrice })
+    }
+
+    const onMouseMove = (e: MouseEvent) => {
+      const drag = dragRef.current
+      const s = seriesRef.current
+      if (!drag || !s) return
+
+      const rect = overlay.getBoundingClientRect()
+      const y = e.clientY - rect.top
+      let price = s.coordinateToPrice(y) as number | null
+      if (price === null || !Number.isFinite(price)) return
+
+      const precision = quotePrecisionRef.current
+      if (precision !== undefined) {
+        price = roundToPrecision(price, precision)
+      }
+
+      const meta = drag.item.draggable!
+      const validationError = validateTpslTriggerPrice(meta.side, meta.kind, price, meta.entry)
+      const pnl = positionPnlAt(meta.side, meta.entry, price, meta.qty)
+      updateLabelPrice(
+        drag.item,
+        price,
+        Number.isFinite(pnl) ? fmtSignedUsd(pnl) : undefined,
+      )
+
+      const solid = solidColor(drag.item.color)
+      if (validationError) {
+        drag.item.el.style.borderColor = '#f43f5e'
+        drag.item.el.style.borderLeftColor = '#f43f5e'
+      } else {
+        drag.item.el.style.borderColor = solid
+        drag.item.el.style.borderLeftColor = solid
+      }
+    }
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      endDrag(true)
+      reset()
     }
 
     for (const def of lines) {
@@ -143,23 +289,62 @@ export function usePriceLineLabels({
         lineStyle: baseStyle,
         axisLabelVisible: false,
       })
-      const el = createLabelElement(def)
-      const item: ChartLabel = { price: def.price, color: def.color, baseWidth, baseStyle, line, el }
+      const { el, titleEl, subtitleEl } = createLabelElement(def)
+      const item: ChartLabel = {
+        price: def.price,
+        color: def.color,
+        baseWidth,
+        baseStyle,
+        line,
+        el,
+        titleEl,
+        subtitleEl,
+        titleText: def.title,
+        draggable: def.draggable,
+      }
       el.addEventListener('mouseenter', () => emphasize(item))
       el.addEventListener('mouseleave', reset)
+
+      if (def.draggable && onTpslDragEnd) {
+        el.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return
+          e.preventDefault()
+          e.stopPropagation()
+
+          const borderColor = solidColor(item.color)
+          dragRef.current = { item, fromPrice: item.price, borderColor }
+          document.body.style.cursor = 'ns-resize'
+          document.body.style.userSelect = 'none'
+
+          item.line.applyOptions({
+            color: solidColor(item.color),
+            lineWidth: 3,
+            lineStyle: LineStyle.Solid,
+          })
+          item.el.style.opacity = '1'
+          item.el.style.zIndex = '30'
+
+          window.addEventListener('mousemove', onMouseMove)
+          window.addEventListener('mouseup', onMouseUp)
+        })
+      }
+
       overlay.appendChild(el)
       created.push(item)
     }
     itemsRef.current = created
 
     return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      dragRef.current = null
       for (const it of itemsRef.current) {
         series.removePriceLine(it.line)
         it.el.remove()
       }
       itemsRef.current = []
     }
-  }, [lines, layoutKey, seriesRef, overlayRef])
+  }, [lines, layoutKey, seriesRef, overlayRef, onTpslDragEnd])
 }
 
 /** Wrapper for price-line overlay div (shared by candle charts). */

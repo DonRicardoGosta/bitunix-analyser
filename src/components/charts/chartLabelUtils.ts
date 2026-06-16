@@ -53,6 +53,8 @@ export function applyAdaptivePriceFormat(series: ISeriesApi<'Candlestick'>, refP
 export interface OverlayLabelItem {
   price: number
   el: HTMLDivElement
+  /** When true, label Y tracks the price line directly (skip collision lanes). */
+  pinToPrice?: boolean
 }
 
 /** Position HTML overlay labels with lane-based collision avoidance. */
@@ -72,18 +74,37 @@ export function positionOverlayLabels(
   const minY = gap / 2
   const maxY = H - gap / 2
 
-  const items = labels.map((l) => ({ el: l.el, y: series.priceToCoordinate(l.price) as number | null }))
+  const items = labels.map((l) => ({
+    el: l.el,
+    y: series.priceToCoordinate(l.price) as number | null,
+    pinToPrice: l.pinToPrice,
+  }))
   for (const it of items) if (it.y === null) it.el.style.top = '-9999px'
-  const vis = items.filter((it): it is { el: HTMLDivElement; y: number } => it.y !== null)
+
+  type VisItem = { el: HTMLDivElement; y: number; pinToPrice?: boolean }
+  const vis: VisItem[] = []
+  for (const it of items) {
+    if (it.y === null) continue
+    vis.push({ el: it.el, y: it.y, pinToPrice: it.pinToPrice })
+  }
   if (vis.length === 0) return
 
   const maxLabelW = Math.max(...vis.map((it) => it.el.offsetWidth), 80)
   const laneStep = maxLabelW + 10
   const maxLanes = Math.max(1, Math.floor((W - axisW - 12) / laneStep))
 
-  vis.sort((a, b) => a.y - b.y)
+  const pinned = vis.filter((it) => it.pinToPrice)
+  const floating = vis.filter((it) => !it.pinToPrice)
+
+  for (const it of pinned) {
+    const y = Math.min(Math.max(it.y, minY), maxY)
+    it.el.style.top = `${y}px`
+    it.el.style.right = `${baseRight}px`
+  }
+
+  floating.sort((a, b) => a.y - b.y)
   const laneLastY: number[] = []
-  for (const it of vis) {
+  for (const it of floating) {
     let y = Math.min(Math.max(it.y, minY), maxY)
     let lane = 0
     while (lane < maxLanes && laneLastY[lane] !== undefined && y < laneLastY[lane] + gap) lane++

@@ -18,6 +18,24 @@ export function parsePendingPosition(p: PendingPositionRaw): ParsedPendingPositi
   return { ...p, side: normalizePositionSide(p.side) }
 }
 
+/** Validate a TP/SL trigger price relative to entry (shared by modal and chart drag). */
+export function validateTpslTriggerPrice(
+  side: PositionSide,
+  kind: 'tp' | 'sl',
+  price: number,
+  entry: number,
+): string | null {
+  if (!Number.isFinite(price) || price <= 0) return 'Enter a valid price'
+  if (side === 'LONG') {
+    if (kind === 'tp' && price <= entry) return 'LONG take-profit must be above entry'
+    if (kind === 'sl' && price >= entry) return 'LONG stop-loss must be below entry'
+  } else {
+    if (kind === 'tp' && price >= entry) return 'SHORT take-profit must be below entry'
+    if (kind === 'sl' && price <= entry) return 'SHORT stop-loss must be above entry'
+  }
+  return null
+}
+
 /** Estimated PnL at a trigger price for the given position size. */
 export function positionPnlAt(
   side: PositionSide,

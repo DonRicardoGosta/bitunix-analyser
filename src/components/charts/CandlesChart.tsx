@@ -14,11 +14,11 @@ import type { Candle } from '../../lib/candles'
 import { bollinger, ema, vwap } from '../../lib/indicators'
 import { createVisibleCandleAutoscaleProvider, subscribeVisibleRangeAutoscale } from './chartAutoscale'
 import { applyAdaptivePriceFormat } from './chartLabelUtils'
-import type { PriceLineDef, PriceZoneDef } from './chartTypes'
+import type { PriceLineDef, PriceLineDragMeta, PriceZoneDef } from './chartTypes'
 import { chartOverlayStyle, chartShellStyle, usePriceLineLabels } from './usePriceLineLabels'
 import { usePriceZoneOverlay } from './usePriceZoneOverlay'
 
-export type { PriceLineDef, PriceZoneDef } from './chartTypes'
+export type { PriceLineDef, PriceLineDragMeta, PriceZoneDef } from './chartTypes'
 
 export interface OverlayToggles {
   ema9: boolean
@@ -36,6 +36,14 @@ interface Props {
   /** Support/resistance zone overlays. */
   priceZones?: PriceZoneDef[]
   height?: number
+  onTpslDragEnd?: (payload: {
+    meta: PriceLineDragMeta
+    fromPrice: number
+    toPrice: number
+  }) => void
+  quotePrecision?: number
+  pinnedTpslOrderId?: string | null
+  pinnedTpslKind?: 'tp' | 'sl' | null
 }
 
 interface LineDef {
@@ -45,7 +53,17 @@ interface LineDef {
   values: (number | null)[]
 }
 
-export function CandlesChart({ candles, overlays, priceLines = [], priceZones = [], height = 460 }: Props) {
+export function CandlesChart({
+  candles,
+  overlays,
+  priceLines = [],
+  priceZones = [],
+  height = 460,
+  onTpslDragEnd,
+  quotePrecision,
+  pinnedTpslOrderId,
+  pinnedTpslKind,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const overlayRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -128,6 +146,10 @@ export function CandlesChart({ candles, overlays, priceLines = [], priceZones = 
     overlayRef,
     lines: priceLines,
     layoutKey: candles,
+    onTpslDragEnd,
+    quotePrecision,
+    pinnedTpslOrderId,
+    pinnedTpslKind,
   })
 
   useEffect(() => {

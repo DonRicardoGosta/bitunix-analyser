@@ -102,6 +102,15 @@ export function buildPositionChartLines(
         title: levelLabel(tag, 'tp', level.index, tp.length),
         subtitle: Number.isFinite(pnl) ? fmtSignedUsd(pnl) : undefined,
         dashed: true,
+        draggable: {
+          kind: 'tp',
+          orderId: level.orderId,
+          positionId: p.positionId,
+          symbol: p.symbol,
+          side: p.side,
+          entry,
+          qty,
+        },
       })
     }
     for (const level of sl) {
@@ -113,6 +122,15 @@ export function buildPositionChartLines(
         title: levelLabel(tag, 'sl', level.index, sl.length),
         subtitle: Number.isFinite(pnl) ? fmtSignedUsd(pnl) : undefined,
         dashed: true,
+        draggable: {
+          kind: 'sl',
+          orderId: level.orderId,
+          positionId: p.positionId,
+          symbol: p.symbol,
+          side: p.side,
+          entry,
+          qty,
+        },
       })
     }
 

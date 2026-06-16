@@ -1,3 +1,13 @@
+export interface PriceLineDragMeta {
+  kind: 'tp' | 'sl'
+  orderId: string
+  positionId: string
+  symbol: string
+  side: 'LONG' | 'SHORT'
+  entry: number
+  qty: number
+}
+
 export interface PriceLineDef {
   price: number
   color: string
@@ -5,6 +15,7 @@ export interface PriceLineDef {
   subtitle?: string
   dashed?: boolean
   width?: 1 | 2 | 3
+  draggable?: PriceLineDragMeta
 }
 
 export interface ChartMarker {

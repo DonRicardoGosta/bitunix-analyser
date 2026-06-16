@@ -4,7 +4,7 @@ import { roundToPrecision } from '../setup/order'
 import type { SymbolSpec } from '../setup/order'
 import { fmtPrice, fmtSignedUsd, pnlColor, toNum } from '../../../lib/format'
 import type { PositionTpslLevel } from '../../stats/positionChart'
-import { positionPnlAt } from '../../stats/positions'
+import { positionPnlAt, validateTpslTriggerPrice } from '../../stats/positions'
 import { buildModifyTpslParams, usePositionMutations } from '../../stats/usePositionMutations'
 
 export type TpslEditMode = 'add-tp' | 'add-sl' | 'edit-tp' | 'edit-sl'
@@ -20,23 +20,6 @@ interface Props {
   spec: SymbolSpec
   mark: number
   onClose: () => void
-}
-
-function validatePrice(
-  side: 'LONG' | 'SHORT',
-  kind: 'tp' | 'sl',
-  price: number,
-  entry: number,
-): string | null {
-  if (!Number.isFinite(price) || price <= 0) return 'Enter a valid price'
-  if (side === 'LONG') {
-    if (kind === 'tp' && price <= entry) return 'LONG take-profit must be above entry'
-    if (kind === 'sl' && price >= entry) return 'LONG stop-loss must be below entry'
-  } else {
-    if (kind === 'tp' && price >= entry) return 'SHORT take-profit must be below entry'
-    if (kind === 'sl' && price <= entry) return 'SHORT stop-loss must be above entry'
-  }
-  return null
 }
 
 export function TpslEditModal({ target, spec, mark, onClose }: Props) {
@@ -63,7 +46,7 @@ export function TpslEditModal({ target, spec, mark, onClose }: Props) {
   const parsedPrice = toNum(price, NaN)
   const parsedQty = toNum(qty, NaN)
   const validationError = useMemo(
-    () => validatePrice(position.side, kind, parsedPrice, entry),
+    () => validateTpslTriggerPrice(position.side, kind, parsedPrice, entry),
     [position.side, kind, parsedPrice, entry],
   )
   const qtyError =

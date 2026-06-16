@@ -6,14 +6,20 @@ import { useCandles } from '../useCandles'
 import { useOrderBook } from '../useOrderBook'
 import { usePendingPositions, usePositionTpsl } from '../../stats/useStats'
 import { buildPositionChartLines } from '../../stats/positionChart'
+import { positionPnlAt } from '../../stats/positions'
+import { buildModifyTpslParams, usePositionMutations } from '../../stats/usePositionMutations'
 import { computeKeyLevels } from '../setup/engine'
+import { roundToPrecision } from '../setup/order'
+import { useSymbolSpecs } from '../useSymbolSpecs'
 import { pickChartZones } from '../chartLevels'
 import { CandlesChart, type OverlayToggles } from '../../../components/charts/CandlesChart'
-import type { PriceLineDef } from '../../../components/charts/chartTypes'
+import type { PriceLineDef, PriceLineDragMeta } from '../../../components/charts/chartTypes'
 import { ChartPositionsPanel } from './ChartPositionsPanel'
+import { TpslDragConfirmModal } from './TpslDragConfirmModal'
 import { RsiPanel, MacdPanel, StochRsiPanel } from '../IndicatorPanels'
 import { Panel, Spinner, ErrorNote } from '../../../components/ui/primitives'
 import { atr } from '../../../lib/indicators'
+import { fmtSignedUsd } from '../../../lib/format'
 import type { Candle } from '../../../lib/candles'
 
 const OVERLAY_LABELS: { key: keyof OverlayToggles; label: string }[] = [
@@ -49,9 +55,16 @@ export function ChartTab() {
   const [subPanels, setSubPanels] = useState({ rsi: true, macd: true, stoch: false })
   const [showPositions, setShowPositions] = useState(true)
   const [showZones, setShowZones] = useState(true)
+  const [dragConfirm, setDragConfirm] = useState<{
+    meta: PriceLineDragMeta
+    fromPrice: number
+    toPrice: number
+  } | null>(null)
 
   const { candles, status, error } = useCandles(symbol, interval, priceType)
   const { book } = useOrderBook(symbol)
+  const { spec } = useSymbolSpecs(symbol)
+  const { modifyTpslMut } = usePositionMutations()
 
   const pending = usePendingPositions()
   const tpsl = usePositionTpsl()
@@ -73,8 +86,30 @@ export function ChartTab() {
 
   const positionLines = useMemo<PriceLineDef[]>(() => {
     if (!showPositions || mine.length === 0) return []
-    return buildPositionChartLines(mine, tpsl.data)
-  }, [showPositions, mine, tpsl.data])
+    let lines = buildPositionChartLines(mine, tpsl.data)
+    if (dragConfirm) {
+      lines = lines.map((line) => {
+        if (
+          line.draggable?.orderId === dragConfirm.meta.orderId &&
+          line.draggable.kind === dragConfirm.meta.kind
+        ) {
+          const pnl = positionPnlAt(
+            line.draggable.side,
+            line.draggable.entry,
+            dragConfirm.toPrice,
+            line.draggable.qty,
+          )
+          return {
+            ...line,
+            price: dragConfirm.toPrice,
+            subtitle: Number.isFinite(pnl) ? fmtSignedUsd(pnl) : undefined,
+          }
+        }
+        return line
+      })
+    }
+    return lines
+  }, [showPositions, mine, tpsl.data, dragConfirm])
 
   return (
     <div className="flex flex-col gap-4">
@@ -137,12 +172,37 @@ export function ChartTab() {
             priceLines={positionLines}
             priceZones={priceZones}
             height={460}
+            onTpslDragEnd={setDragConfirm}
+            quotePrecision={spec.quotePrecision}
+            pinnedTpslOrderId={dragConfirm?.meta.orderId ?? null}
+            pinnedTpslKind={dragConfirm?.meta.kind ?? null}
           />
         </div>
       </Panel>
 
       {mine.length > 0 && (
         <ChartPositionsPanel positions={mine} tpslOrders={tpsl.data} />
+      )}
+
+      {dragConfirm && (
+        <TpslDragConfirmModal
+          meta={dragConfirm.meta}
+          fromPrice={dragConfirm.fromPrice}
+          toPrice={dragConfirm.toPrice}
+          pending={modifyTpslMut.isPending}
+          error={modifyTpslMut.error}
+          onCancel={() => setDragConfirm(null)}
+          onConfirm={() => {
+            const order = tpsl.data?.find((o) => o.id === dragConfirm.meta.orderId)
+            if (!order) return
+            const priceStr = String(roundToPrecision(dragConfirm.toPrice, spec.quotePrecision))
+            const qtyStr = String(roundToPrecision(dragConfirm.meta.qty, spec.basePrecision))
+            modifyTpslMut.mutate(
+              buildModifyTpslParams(order, dragConfirm.meta.kind, priceStr, qtyStr),
+              { onSuccess: () => setDragConfirm(null) },
+            )
+          }}
+        />
       )}
 
       <div className="flex flex-wrap items-center gap-1">
