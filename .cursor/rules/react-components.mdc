@@ -1,0 +1,53 @@
+---
+description: React component patterns for this Vite + Tailwind app
+globs: src/**/*.tsx
+alwaysApply: false
+---
+
+# React components
+
+## Structure
+
+- One component per file for page-level and shared components; small local helpers (`function LegCard(...)`) may live in the same file.
+- Named exports for reusable components (`export function Panel(...)`). Default export only for `App.tsx`.
+- Props: inline object types for simple components; extract named interfaces when reused or exported.
+- Keep components under ~250 lines; extract subcomponents or hooks when they grow.
+
+## State
+
+- **Zustand** for cross-page client state: credentials, favourites, UI prefs, tickers.
+- **TanStack Query** (`useQuery`, `useMutation`) for REST data with loading/error states.
+- **Local `useState`** for form inputs and ephemeral UI (modals, tabs).
+- Effects that sync with WebSocket/REST streams are intentional — do not "fix" them to satisfy react-hooks purity rules.
+
+## Styling
+
+- Tailwind utility classes; dark theme with zinc base (`bg-zinc-900`, `text-zinc-100`, `border-zinc-800`).
+- Gains: `text-emerald-400`; losses: `text-rose-400`.
+- Use `clsx(...)` for conditional classes.
+- Reuse `.panel` class from `src/index.css` via the `Panel` primitive.
+- Tabular numbers for prices/PnL: `tabular` class.
+
+## Patterns to follow
+
+```tsx
+// Query + loading/error
+const { data, isLoading, error } = useQuery({ queryKey: ['key'], queryFn: fetchFn })
+if (isLoading) return <div className="text-zinc-500">Loading…</div>
+if (error) return <div className="text-rose-400">{String(error)}</div>
+
+// Panel layout
+<Panel title="Title" subtitle="optional" actions={<Button>Action</Button>}>
+  {children}
+</Panel>
+```
+
+## Charts
+
+- Candle/price charts: `CandlesChart` (lightweight-charts) or `SetupChart` for annotated setups.
+- Histograms, heatmaps, multi-series: `EChart` wrapper with theme from `chartTheme.ts`.
+- Always dispose chart instances on unmount (handled inside wrappers — extend them, don't duplicate lifecycle logic).
+
+## Routing
+
+- Pages: `AnalysisPage`, `StatsPage`, `SettingsPage` — add new routes in `App.tsx` inside `AppLayout`.

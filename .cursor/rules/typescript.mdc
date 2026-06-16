@@ -1,0 +1,39 @@
+---
+description: TypeScript conventions for this codebase
+globs: "**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# TypeScript
+
+## Compiler settings (`tsconfig.app.json`)
+
+- `verbatimModuleSyntax: true` — use `import type` for type-only imports.
+- `noUnusedLocals` / `noUnusedParameters` — remove dead code; prefix with `_` only when required by an interface.
+- `erasableSyntaxOnly: true` — no `enum`; use string unions or `as const` objects.
+- `noEmit: true` — Vite handles bundling; `npm run build` runs `tsc -b` for type-checking.
+
+## Types
+
+- Exchange DTOs live in `src/lib/bitunix/types.ts` and `src/lib/binance/types.ts`.
+- Feature-specific types co-locate with the module (`engine.ts` exports `TradePlan`, `SetupResult`, etc.).
+- Re-export public types from orchestrator modules (`export type { X } from './signal'`).
+- Prefer `interface` for object shapes that may be extended; `type` for unions and computed types.
+- Use `LONG | 'SHORT'` string unions consistently for position direction.
+
+## Modules
+
+- Pure functions for indicators (`src/lib/indicators.ts`), candles (`src/lib/candles.ts`), scoring — no React imports in `lib/`.
+- Side-effect-free analysis in `src/features/analysis/setup/` — testable without DOM.
+- Async helpers: `src/lib/async.ts` for debounce/throttle patterns.
+
+## Errors
+
+- `BitunixError` in `rest.ts` carries `code`; surface user-readable messages in UI.
+- Don't swallow errors silently — show inline error state or toast-style message in the panel.
+
+## Naming
+
+- Hooks: `use` prefix (`useCandles`, `useStats`, `usePositionReviews`).
+- Stores: `useXxx` from Zustand (`useCredentials`, `useFavourites`).
+- Files: camelCase for utilities (`entryQuality.ts`), PascalCase for components (`OrderTicket.tsx`).
