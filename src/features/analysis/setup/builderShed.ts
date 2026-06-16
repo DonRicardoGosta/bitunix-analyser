@@ -71,6 +71,17 @@ export function clearFinishedBuilderShedJobs(symbol?: string): void {
   )
 }
 
+/** Reset failed shed jobs back to pending so they are retried, optionally for one symbol. */
+export function retryFailedBuilderShedJobs(symbol?: string): void {
+  writeJobs(
+    readJobs().map((j) =>
+      j.status === 'failed' && (symbol === undefined || j.symbol === symbol)
+        ? { ...j, status: 'pending' as const, error: undefined }
+        : j,
+    ),
+  )
+}
+
 export function registerBuilderShedJobs(inputs: BuilderShedJobInput[]): void {
   if (!inputs.length) return
   const now = Date.now()

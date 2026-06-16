@@ -96,8 +96,14 @@ export function OrderTicket({
   const hasKeys = useCredentials((s) => s.hasKeys())
   const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
   const hasWebSession = useCredentials((s) => s.hasWebSession())
-  const { activeCount: shedActiveCount, failedCount: shedFailedCount, tpslPendingCount, tpslFailedCount } =
-    useBuilderShedWatcher(symbol)
+  const {
+    activeCount: shedActiveCount,
+    failedCount: shedFailedCount,
+    tpslPendingCount,
+    tpslFailedCount,
+    shedBusy,
+    shedNow,
+  } = useBuilderShedWatcher(symbol)
 
   // Persisted ticket settings (remembered across navigation/reloads).
   const leverage = useUiPrefs((s) => s.ticketLeverage)
@@ -1135,14 +1141,20 @@ export function OrderTicket({
             </p>
           )}
           {isBuilder && shedActiveCount > 0 && (
-            <p className="rounded-md bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
-              Auto-shed watching {shedActiveCount} rung{shedActiveCount === 1 ? '' : 's'} — excess closes via market when each limit fills.
-            </p>
+            <div className="flex items-center justify-between gap-2 rounded-md bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
+              <span>
+                Auto-shed watching {shedActiveCount} rung{shedActiveCount === 1 ? '' : 's'} — excess closes via market when each limit fills.
+              </span>
+              <ShedNowButton onClick={shedNow} busy={shedBusy} />
+            </div>
           )}
           {isBuilder && shedFailedCount > 0 && (
-            <p className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">
-              Auto-shed failed on {shedFailedCount} rung{shedFailedCount === 1 ? '' : 's'} — trim positions manually if needed.
-            </p>
+            <div className="flex items-center justify-between gap-2 rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">
+              <span>
+                Auto-shed failed on {shedFailedCount} rung{shedFailedCount === 1 ? '' : 's'} — use Shed now to retry, or trim positions manually.
+              </span>
+              <ShedNowButton onClick={shedNow} busy={shedBusy} />
+            </div>
           )}
 
           {both ? (
@@ -1739,6 +1751,18 @@ function StraddleConfirmModal({
         </div>
       </div>
     </div>
+  )
+}
+
+function ShedNowButton({ onClick, busy }: { onClick: () => void; busy: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="shrink-0 rounded-md border border-current px-2 py-0.5 text-[11px] font-medium hover:bg-white/10 disabled:opacity-50"
+    >
+      {busy ? 'Shedding…' : 'Shed now'}
+    </button>
   )
 }
 
