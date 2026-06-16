@@ -1,6 +1,11 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import type { IChartApi, ISeriesApi } from 'lightweight-charts'
-import { createZoneElements, positionPriceZones, type OverlayZoneItem } from './chartLabelUtils'
+import {
+  applyZoneVisual,
+  createZoneElements,
+  positionPriceZones,
+  type OverlayZoneItem,
+} from './chartLabelUtils'
 import type { PriceZoneDef } from './chartTypes'
 
 interface UsePriceZoneOverlayArgs {
@@ -27,15 +32,16 @@ export function usePriceZoneOverlay({
       rafRef.current = requestAnimationFrame(loop)
       const series = seriesRef.current
       const chart = chartRef.current
-      if (!series || !chart || itemsRef.current.length === 0) return
-      positionPriceZones(series, chart, itemsRef.current)
+      const overlay = overlayRef.current
+      if (!series || !chart || !overlay || itemsRef.current.length === 0) return
+      positionPriceZones(series, chart, overlay, itemsRef.current)
     }
     rafRef.current = requestAnimationFrame(loop)
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
       rafRef.current = null
     }
-  }, [chartRef, seriesRef])
+  }, [chartRef, seriesRef, overlayRef])
 
   useEffect(() => {
     const overlay = overlayRef.current
@@ -48,17 +54,30 @@ export function usePriceZoneOverlay({
     itemsRef.current = []
 
     const created: OverlayZoneItem[] = []
+
+    const emphasize = (target: OverlayZoneItem) => {
+      for (const it of created) {
+        applyZoneVisual(it, it === target ? 'emphasized' : 'dimmed')
+      }
+    }
+    const reset = () => {
+      for (const it of created) applyZoneVisual(it, 'default')
+    }
+
     for (const zone of zones) {
       const { rectEl, labelEl } = createZoneElements(zone)
+      const item: OverlayZoneItem = { zone, rectEl, labelEl }
+      rectEl.addEventListener('mouseenter', () => emphasize(item))
+      rectEl.addEventListener('mouseleave', reset)
       overlay.insertBefore(rectEl, overlay.firstChild)
       overlay.insertBefore(labelEl, overlay.firstChild)
-      created.push({ zone, rectEl, labelEl })
+      created.push(item)
     }
     itemsRef.current = created
 
     const series = seriesRef.current
     const chart = chartRef.current
-    if (series && chart) positionPriceZones(series, chart, created)
+    if (series && chart) positionPriceZones(series, chart, overlay, created)
 
     return () => {
       for (const it of itemsRef.current) {

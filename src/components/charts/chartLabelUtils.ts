@@ -128,26 +128,71 @@ export function formatStrengthScore(strength: number): string {
 function zoneStrengthAlphas(
   strength: number,
   side: 'support' | 'resistance',
+  emphasis = 1,
 ): { fill: string; border: string } {
   const [r, g, b] = ZONE_RGB[side]
   const t = clamp((strength - 0.55) / 0.45, 0, 1)
-  const fillAlpha = 0.12 + t * 0.18
-  const borderAlpha = 0.45 + t * 0.3
+  const fillAlpha = clamp((0.12 + t * 0.18) * emphasis, 0, 1)
+  const borderAlpha = clamp((0.45 + t * 0.3) * emphasis, 0, 1)
   return {
     fill: `rgba(${r},${g},${b},${fillAlpha})`,
     border: `rgba(${r},${g},${b},${borderAlpha})`,
   }
 }
 
+export type ZoneVisualMode = 'default' | 'emphasized' | 'dimmed'
+
+/** Apply default, hover-emphasized, or dimmed styling to a zone overlay item. */
+export function applyZoneVisual(item: OverlayZoneItem, mode: ZoneVisualMode): void {
+  const { zone, rectEl, labelEl } = item
+  const textColor = ZONE_TEXT[zone.side]
+  const base = zoneStrengthAlphas(zone.strength, zone.side)
+
+  if (mode === 'dimmed') {
+    rectEl.style.opacity = '0.25'
+    labelEl.style.opacity = '0.25'
+    return
+  }
+
+  rectEl.style.opacity = ''
+  labelEl.style.opacity = mode === 'emphasized' ? '1' : '0.65'
+
+  if (mode === 'emphasized') {
+    const emphasized = zoneStrengthAlphas(zone.strength, zone.side, 1.5)
+    rectEl.style.background = emphasized.fill
+    rectEl.style.border = `1px solid ${emphasized.border}`
+    rectEl.style.zIndex = '20'
+    labelEl.style.zIndex = '30'
+    labelEl.style.background = '#0b0f18'
+    labelEl.style.border = `1px solid ${textColor}`
+    labelEl.style.borderRadius = '4px'
+    labelEl.style.padding = '3px 6px'
+    labelEl.style.boxShadow = `0 0 0 1px ${textColor}, 0 2px 6px rgba(0,0,0,0.8)`
+    return
+  }
+
+  rectEl.style.background = base.fill
+  rectEl.style.border = `1px solid ${base.border}`
+  rectEl.style.zIndex = '10'
+  labelEl.style.zIndex = '11'
+  labelEl.style.background = ''
+  labelEl.style.border = ''
+  labelEl.style.borderRadius = ''
+  labelEl.style.padding = ''
+  labelEl.style.boxShadow = ''
+}
+
 /** Position HTML overlay S/R zone rectangles and their labels. */
 export function positionPriceZones(
   series: ISeriesApi<'Candlestick'>,
   chart: IChartApi,
+  overlay: HTMLDivElement,
   items: OverlayZoneItem[],
 ): void {
   if (items.length === 0) return
 
   const timeScale = chart.timeScale()
+  const chartRight = overlay.clientWidth - chart.priceScale('right').width()
 
   for (const { zone, rectEl, labelEl } of items) {
     const yHigh = series.priceToCoordinate(zone.priceHigh)
@@ -172,28 +217,39 @@ export function positionPriceZones(
       continue
     }
 
+    const zoneRight = left + width
+    const visLeft = Math.max(left, 0)
+    const visRight = Math.min(zoneRight, chartRight)
+
+    if (visRight <= visLeft) {
+      rectEl.style.top = '-9999px'
+      labelEl.style.top = '-9999px'
+      continue
+    }
+
     rectEl.style.top = `${top}px`
     rectEl.style.left = `${left}px`
     rectEl.style.width = `${width}px`
     rectEl.style.height = `${height}px`
 
-    labelEl.style.top = `${top + height + 4}px`
-    labelEl.style.left = `${left}px`
+    const labelX = (visLeft + visRight) / 2
+    const labelY = top + height / 2
+    labelEl.style.top = `${labelY}px`
+    labelEl.style.left = `${labelX}px`
+    labelEl.style.transform = 'translate(-50%, -50%)'
   }
 }
 
 export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement; labelEl: HTMLDivElement } {
-  const { fill, border } = zoneStrengthAlphas(zone.strength, zone.side)
   const rectEl = document.createElement('div')
   Object.assign(rectEl.style, {
     position: 'absolute',
     top: '-9999px',
     left: '0px',
     boxSizing: 'border-box',
-    background: fill,
-    border: `1px solid ${border}`,
     borderRadius: '2px',
-    pointerEvents: 'none',
+    cursor: 'default',
+    pointerEvents: 'auto',
     zIndex: '10',
   } as Partial<CSSStyleDeclaration>)
 
@@ -207,8 +263,11 @@ export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement
     font: 700 10px Inter, sans-serif;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+    text-align: center;
+    white-space: nowrap;
     color: ${ZONE_TEXT[zone.side]};
     line-height: 1.3;
+    opacity: 0.65;
   `
   const title = document.createElement('div')
   title.textContent = zone.label
@@ -224,6 +283,9 @@ export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement
     color: rgba(148,163,184,0.9);
   `
   labelEl.appendChild(sub)
+
+  const item: OverlayZoneItem = { zone, rectEl, labelEl }
+  applyZoneVisual(item, 'default')
 
   return { rectEl, labelEl }
 }
