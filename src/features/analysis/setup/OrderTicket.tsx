@@ -13,12 +13,6 @@ import {
   type BuilderRungSizing,
   type TpMode,
 } from './order'
-import {
-  registerBuilderShedJobs,
-  ensureBuilderShedPolling,
-  clearFinishedBuilderShedJobs,
-  type BuilderShedJobInput,
-} from './builderShed'
 import { submitMomentumTriggers, type MomentumTriggerRung } from './builderTrigger'
 import {
   registerBuilderTpslJob,
@@ -96,8 +90,7 @@ export function OrderTicket({
   const hasKeys = useCredentials((s) => s.hasKeys())
   const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
   const hasWebSession = useCredentials((s) => s.hasWebSession())
-  const { activeCount: shedActiveCount, failedCount: shedFailedCount, tpslPendingCount, tpslFailedCount } =
-    useBuilderShedWatcher(symbol)
+  const { tpslPendingCount, tpslFailedCount } = useBuilderShedWatcher(symbol)
 
   // Persisted ticket settings (remembered across navigation/reloads).
   const leverage = useUiPrefs((s) => s.ticketLeverage)
@@ -250,8 +243,8 @@ export function OrderTicket({
   const straddleNotices = [...(longProj?.notices ?? []), ...(shortProj?.notices ?? [])]
 
   // ---- Position Builder sizing ----
-  // Split the budget across rungs; each rung is sized from its share, applying
-  // the open-then-shed trick when the target is below the exchange minimum.
+  // Split the budget across rungs; each rung is sized from its share. A rung
+  // must clear the exchange minimum — there is no open-then-shed trick.
   const builderRungSizings = useMemo<BuilderRungSizing[]>(() => {
     if (!isBuilder) return []
     const budget = toNum(builderBudget)
@@ -265,7 +258,20 @@ export function OrderTicket({
   const builderNetNotional = builderRungSizings.reduce((a, s) => a + s.netQty * s.price, 0)
   const builderNetMargin = leverage > 0 ? builderNetNotional / leverage : 0
   const builderAvgEntry = builderNetQty > 0 ? builderNetNotional / builderNetQty : builder.avgEntry
-  const builderUsesTrick = builderRungSizings.some((s) => s.usesTrick)
+  const builderBelowMin = builderRungSizings.some((s) => s.belowMin)
+
+  // Minimum budget so every rung's margin slice clears the exchange minimum:
+  // budget * weight_i * leverage / price_i >= min  =>  budget >= min * price_i / (weight_i * leverage).
+  const builderMinBudget = useMemo<number>(() => {
+    if (!isBuilder || spec.minTradeVolume <= 0 || leverage <= 0) return 0
+    let max = 0
+    for (const r of builder.rungs) {
+      if (r.weight <= 0) continue
+      const req = (spec.minTradeVolume * r.price) / (r.weight * leverage)
+      if (req > max) max = req
+    }
+    return Math.ceil(max * 100) / 100
+  }, [isBuilder, builder, spec.minTradeVolume, leverage])
 
   // Aggregate projection: avgEntry is qty-weighted, so P&L at the shared TP/stop
   // is exact; the liquidation estimate uses the same average entry.
@@ -290,14 +296,31 @@ export function OrderTicket({
   const builderWarnings = useMemo<string[]>(() => {
     if (!isBuilder) return []
     const out: string[] = []
-    if (toNum(builderBudget) <= 0) out.push('Set a budget above 0.')
-    else if (builderRungSizings.length === 0 || builderNetQty <= 0)
+    if (toNum(builderBudget) <= 0) {
+      out.push('Set a budget above 0.')
+    } else if (builderBelowMin && builderMinBudget > 0) {
+      out.push(
+        `Need at least ${fmtUsd(builderMinBudget)} margin for ${builderRungSizings.length} rungs at ${leverage}x ` +
+          `(exchange minimum ${spec.minTradeVolume} per rung). Raise the budget or leverage, or use fewer rungs.`,
+      )
+    } else if (builderRungSizings.length === 0 || builderNetQty <= 0) {
       out.push('No rung is large enough to open at this budget/leverage — raise the budget or leverage, or use fewer rungs.')
-    for (const s of builderRungSizings) if (s.warning && !out.includes(s.warning)) out.push(s.warning)
+    }
     if (availableBalance !== undefined && builderNetMargin > availableBalance)
       out.push(`Total margin ${fmtUsd(builderNetMargin)} exceeds your available balance.`)
     return out
-  }, [isBuilder, builderBudget, builderRungSizings, builderNetQty, builderNetMargin, availableBalance])
+  }, [
+    isBuilder,
+    builderBudget,
+    builderBelowMin,
+    builderMinBudget,
+    builderRungSizings.length,
+    builderNetQty,
+    builderNetMargin,
+    availableBalance,
+    leverage,
+    spec.minTradeVolume,
+  ])
 
   const builderUsesTriggers = isBuilder && builderUsesTriggerEntry(builder.entryStyle)
 
@@ -311,13 +334,9 @@ export function OrderTicket({
       if (!hasWebSession) {
         out.push('Trigger orders need your Bitunix web session token — add it in Settings to enable momentum builds.')
       }
-    } else if (builderUsesTrick) {
-      out.push(
-        'Some rungs are below the exchange minimum: each opens at the exchange minimum plus your target, then auto-sheds the excess via a market close when the limit fills (hedge mode requires positionId — shed orders cannot be pre-placed).',
-      )
     }
     return out
-  }, [isBuilder, builder.entryStyle, builderUsesTrick, hasWebSession])
+  }, [isBuilder, builder.entryStyle, hasWebSession])
 
   const presets = LEVERAGE_PRESETS.filter((p) => p >= spec.minLeverage && p <= spec.maxLeverage)
   const canSubmit =
@@ -462,7 +481,7 @@ export function OrderTicket({
   // once a rung fills.
   async function doSubmitBuilder() {
     setShowConfirm(false)
-    const active = builderRungSizings.filter((r) => r.openQty > 0)
+    const active = builderRungSizings.filter((r) => r.netQty > 0)
     if (active.length === 0) return
     const useTriggers = builderUsesTriggerEntry(builder.entryStyle)
     const tp = String(roundToPrecision(builder.tp, spec.quotePrecision))
@@ -476,8 +495,8 @@ export function OrderTicket({
   }
 
   // Momentum: place a native stop-limit trigger per rung, then attach the
-  // shared position TP/SL once a rung fills. Sizing sends max(target, min) coin
-  // so sub-minimum rungs are accepted without the open+shed trick.
+  // shared position TP/SL once a rung fills. Each rung is sized at its validated
+  // net quantity (already at/above the exchange minimum — no shed).
   async function submitMomentumBuilder(active: BuilderRungSizing[], tp: string, sl: string) {
     if (!hasWebSession) {
       setSubmit({
@@ -494,7 +513,7 @@ export function OrderTicket({
 
       const rungs: MomentumTriggerRung[] = active.map((r) => ({
         triggerPrice: roundToPrecision(r.price, spec.quotePrecision),
-        amount: Math.max(r.targetQty, spec.minTradeVolume),
+        amount: r.netQty,
       }))
 
       setSubmit({ kind: 'submitting', step: `Placing ${rungs.length} trigger order${rungs.length === 1 ? '' : 's'}…` })
@@ -531,14 +550,12 @@ export function OrderTicket({
     }
   }
 
-  // Pullback: resting POST_ONLY limit orders on the passive side, with the
-  // open+shed trick for sub-minimum rungs.
+  // Pullback: resting POST_ONLY limit orders on the passive side. Every rung is
+  // already at/above the exchange minimum (the build is blocked otherwise).
   async function submitPullbackBuilder(active: BuilderRungSizing[], tp: string, sl: string) {
     const orderIds: string[] = []
-    const shedInputs: BuilderShedJobInput[] = []
     let skippedCross = 0
     let refPrice = currentPrice > 0 ? currentPrice : builder.avgEntry
-    clearFinishedBuilderShedJobs(symbol)
     try {
       setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
       let hedge = positionMode === 'HEDGE'
@@ -572,7 +589,7 @@ export function OrderTicket({
           side: isLong ? 'BUY' : 'SELL',
           orderType: 'LIMIT',
           price: String(limitPrice),
-          qty: String(floorToPrecision(r.openQty, spec.basePrecision)),
+          qty: String(floorToPrecision(r.netQty, spec.basePrecision)),
           clientId,
           tpPrice: tp,
           tpStopType: 'LAST_PRICE',
@@ -604,25 +621,7 @@ export function OrderTicket({
 
         setSubmit({ kind: 'submitting', step: `Placing rung ${i + 1}/${total}…` })
         const orderId = await placeOpenRung(r, i, limitPrice)
-        if (orderId) {
-          orderIds.push(orderId)
-          if (r.usesTrick && r.shedQty > 0) {
-            shedInputs.push({
-              orderId,
-              clientId: `builder-${symbol}-${i}`,
-              symbol,
-              side: builder.side,
-              shedQty: floorToPrecision(r.shedQty, spec.basePrecision),
-              basePrecision: spec.basePrecision,
-              rungIndex: i,
-            })
-          }
-        }
-      }
-
-      if (shedInputs.length) {
-        registerBuilderShedJobs(shedInputs)
-        ensureBuilderShedPolling()
+        if (orderId) orderIds.push(orderId)
       }
 
       const notes: string[] = []
@@ -635,22 +634,11 @@ export function OrderTicket({
       if (orderIds.length === 0) {
         throw new Error('No resting limits could be placed at the current price.')
       }
-      if (shedInputs.length > 0) {
-        notes.push(
-          `Auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'} — excess closes on fill.`,
-        )
-      }
       setSubmit({ kind: 'done', orderIds, note: notes.length ? notes.join(' ') : undefined })
     } catch (e) {
-      if (shedInputs.length) {
-        registerBuilderShedJobs(shedInputs)
-        ensureBuilderShedPolling()
-      }
       const base = e instanceof Error ? e.message : String(e)
       const partial =
-        orderIds.length > 0
-          ? ` ${orderIds.length} order${orderIds.length === 1 ? '' : 's'} placed${shedInputs.length ? `; auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'}` : ''}.`
-          : ''
+        orderIds.length > 0 ? ` ${orderIds.length} order${orderIds.length === 1 ? '' : 's'} placed.` : ''
       setSubmit({ kind: 'error', message: `${base}${partial}`, orderIds })
     }
   }
@@ -884,6 +872,17 @@ export function OrderTicket({
                   onChange={(e) => setBuilderBudget(e.target.value)}
                   className="w-full rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
                 />
+                {builderMinBudget > 0 && (
+                  <p
+                    className={clsx(
+                      'mt-1 text-[10px]',
+                      builderBelowMin ? 'text-rose-300' : 'text-zinc-600',
+                    )}
+                  >
+                    Min {fmtUsd(builderMinBudget)} for {builderRungsCount} rungs at {leverage}x (exchange min{' '}
+                    {spec.minTradeVolume}/rung)
+                  </p>
+                )}
               </div>
               <div>
                 <div className="mb-1 flex items-center justify-between text-[11px] uppercase tracking-wide text-zinc-500">
@@ -1134,17 +1133,6 @@ export function OrderTicket({
               Could not attach the shared TP/SL automatically — set it on the position manually if needed.
             </p>
           )}
-          {isBuilder && shedActiveCount > 0 && (
-            <p className="rounded-md bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
-              Auto-shed watching {shedActiveCount} rung{shedActiveCount === 1 ? '' : 's'} — excess closes via market when each limit fills.
-            </p>
-          )}
-          {isBuilder && shedFailedCount > 0 && (
-            <p className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">
-              Auto-shed failed on {shedFailedCount} rung{shedFailedCount === 1 ? '' : 's'} — trim positions manually if needed.
-            </p>
-          )}
-
           {both ? (
             <button
               onClick={() => setShowConfirm(true)}
@@ -1808,20 +1796,16 @@ function BuilderProjection({
             <thead className="sticky top-0 bg-[#0c111b]">
               <tr className="text-left text-[10px] uppercase tracking-wide text-zinc-500">
                 <th className="py-1 pr-2">Price</th>
-                <th className="py-1 pr-2 text-right">Open</th>
-                <th className="py-1 pr-2 text-right">Auto-shed</th>
-                <th className="py-1 text-right">Net</th>
+                <th className="py-1 pr-2 text-right">Size</th>
+                <th className="py-1 text-right">Margin</th>
               </tr>
             </thead>
             <tbody>
               {rungs.map((r, i) => (
                 <tr key={i} className="border-t border-zinc-800/40">
                   <td className="py-1 pr-2 tabular text-zinc-300">{fmtPrice(r.price)}</td>
-                  <td className="py-1 pr-2 text-right tabular text-zinc-300">{fmtCompact(r.openQty, 4)}</td>
-                  <td className="py-1 pr-2 text-right tabular text-amber-300">
-                    {r.shedQty > 0 ? fmtCompact(r.shedQty, 4) : '—'}
-                  </td>
-                  <td className="py-1 text-right tabular text-zinc-100">{fmtCompact(r.netQty, 4)}</td>
+                  <td className="py-1 pr-2 text-right tabular text-zinc-100">{fmtCompact(r.netQty, 4)}</td>
+                  <td className="py-1 text-right tabular text-zinc-300">{fmtUsd(r.targetMargin)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1882,8 +1866,8 @@ function BuilderConfirmModal({
   onConfirm: () => void
 }) {
   const isLong = plan.side === 'LONG'
-  const active = rungs.filter((r) => r.openQty > 0)
-  const trickCount = active.filter((r) => r.usesTrick && r.shedQty > 0).length
+  const active = rungs.filter((r) => r.netQty > 0)
+  const isMomentum = plan.entryStyle === 'momentum'
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
       <div
@@ -1892,12 +1876,9 @@ function BuilderConfirmModal({
       >
         <h3 className="text-base font-semibold text-zinc-100">Confirm position builder · {symbol}</h3>
         <p className="mt-1 text-xs text-amber-300/80">
-          This places {active.length} resting limit order{active.length === 1 ? '' : 's'} on Bitunix futures (
-          {marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x, hedge mode): a Build {plan.side} ladder, each
-          with the shared TP and stop.
-          {trickCount > 0
-            ? ` ${trickCount} rung${trickCount === 1 ? '' : 's'} will auto-shed the exchange minimum on fill (not pre-placed).`
-            : ''}
+          This places {active.length} {isMomentum ? 'trigger' : 'resting limit'} order
+          {active.length === 1 ? '' : 's'} on Bitunix futures ({marginMode === 'CROSS' ? 'cross' : 'isolated'}{' '}
+          {leverage}x, hedge mode): a Build {plan.side} ladder, each with the shared TP and stop.
         </p>
         {!plan.valid && (
           <p className="mt-2 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
@@ -1918,10 +1899,7 @@ function BuilderConfirmModal({
           {active.map((r, i) => (
             <div key={i} className="flex justify-between border-b border-zinc-800/40 py-0.5 last:border-0">
               <span className={clsx('tabular', isLong ? 'text-emerald-300' : 'text-rose-300')}>{fmtPrice(r.price)}</span>
-              <span className="tabular text-zinc-400">
-                open {fmtCompact(r.openQty, 4)}
-                {r.usesTrick ? ` · auto-shed ${fmtCompact(r.shedQty, 4)} on fill` : ''} · net {fmtCompact(r.netQty, 4)}
-              </span>
+              <span className="tabular text-zinc-400">size {fmtCompact(r.netQty, 4)} {baseSymbol}</span>
             </div>
           ))}
         </div>
