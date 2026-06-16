@@ -8,6 +8,7 @@ import {
 } from '../../lib/bitunix/rest'
 import { useCredentials } from '../../store/credentials'
 import type { HistoryPositionRaw, HistoryTradeRaw } from '../../lib/bitunix/types'
+import { parsePendingPosition } from './positions'
 
 const PAGE = 100
 const MAX_PAGES = 30
@@ -56,7 +57,10 @@ export function usePendingPositions() {
   const hasKeys = useCredentials((s) => s.hasKeys())
   return useQuery({
     queryKey: ['pendingPositions'],
-    queryFn: () => getPendingPositions(),
+    queryFn: async () => {
+      const list = await getPendingPositions()
+      return list.map(parsePendingPosition)
+    },
     enabled: hasKeys,
     refetchInterval: 10_000,
   })

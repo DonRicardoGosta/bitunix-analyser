@@ -181,7 +181,7 @@ export interface PendingPositionRaw {
   symbol: string
   qty: string
   entryValue: string
-  side: 'LONG' | 'SHORT'
+  side: 'LONG' | 'SHORT' | 'BUY' | 'SELL'
   marginMode: string
   positionMode: string
   leverage: number

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { PendingPositionRaw } from '../../../lib/bitunix/types'
+import type { ParsedPendingPosition } from '../../stats/positions'
 import { roundToPrecision } from '../setup/order'
 import type { SymbolSpec } from '../setup/order'
 import { fmtPrice, toNum } from '../../../lib/format'
@@ -10,7 +10,7 @@ export type TpslEditMode = 'add-tp' | 'add-sl' | 'edit-tp' | 'edit-sl'
 
 export interface TpslEditTarget {
   mode: TpslEditMode
-  position: PendingPositionRaw
+  position: ParsedPendingPosition
   level?: PositionTpslLevel
 }
 

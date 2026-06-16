@@ -1,6 +1,23 @@
 import type { PendingPositionRaw, TpslOrderRaw } from '../../lib/bitunix/types'
 import { toNum } from '../../lib/format'
 
+export type PositionSide = 'LONG' | 'SHORT'
+
+export type ParsedPendingPosition = Omit<PendingPositionRaw, 'side'> & { side: PositionSide }
+
+/** Map API position side (LONG/SHORT or hedge BUY/SELL) to LONG/SHORT. */
+export function normalizePositionSide(raw: string): PositionSide {
+  const s = raw.toUpperCase()
+  if (s === 'LONG' || s === 'BUY') return 'LONG'
+  if (s === 'SHORT' || s === 'SELL') return 'SHORT'
+  return 'LONG'
+}
+
+/** Normalize pending position fields after fetch (hedge mode may return BUY/SELL). */
+export function parsePendingPosition(p: PendingPositionRaw): ParsedPendingPosition {
+  return { ...p, side: normalizePositionSide(p.side) }
+}
+
 export interface PositionTpsl {
   tp: number
   sl: number
@@ -45,7 +62,7 @@ export function positionIsLong(p: PendingPositionRaw, mark: number): boolean {
   if (entry > 0 && mark > 0 && Math.abs(mark - entry) > entry * 1e-6 && Math.abs(u) > 1e-9) {
     return (u >= 0) === (mark >= entry)
   }
-  return p.side === 'LONG'
+  return normalizePositionSide(p.side) === 'LONG'
 }
 
 export interface PositionOutcome {
