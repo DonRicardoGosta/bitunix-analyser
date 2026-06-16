@@ -117,6 +117,13 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
 }
 
+/** Map internal strength 0..1 to a 0..10 display score (10 = max). */
+export function formatStrengthScore(strength: number): string {
+  const score = strength * 10
+  const text = Number.isInteger(score) ? String(score) : score.toFixed(1)
+  return `${text}/10`
+}
+
 /** Map chart-visible strength (≥0.55) to fill/border rgba alphas. */
 function zoneStrengthAlphas(
   strength: number,
@@ -206,9 +213,9 @@ export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement
   const title = document.createElement('div')
   title.textContent = zone.label
   labelEl.appendChild(title)
-  const pct = `${(zone.strength * 100).toFixed(0)}%`
+  const score = formatStrengthScore(zone.strength)
   const sub = document.createElement('div')
-  sub.textContent = zone.subtitle ? `${zone.subtitle} · ${pct}` : pct
+  sub.textContent = zone.subtitle ? `${zone.subtitle} · ${score}` : score
   sub.style.cssText = `
     margin-top: 1px;
     font: 500 9px Inter, sans-serif;
