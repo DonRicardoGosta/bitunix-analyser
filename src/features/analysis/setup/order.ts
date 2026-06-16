@@ -66,6 +66,68 @@ export interface OrderLeg {
   profit: number // USDT PnL if this leg's TP is hit
 }
 
+export interface BuilderRungSizing {
+  price: number
+  /** Margin (USDT) allocated to this rung from the budget. */
+  targetMargin: number
+  /** Desired net base quantity for this rung. */
+  targetQty: number
+  /** Quantity to open with the limit order (target, or target + min for the trick). */
+  openQty: number
+  /** Quantity shed via a reduce-only order (0 when no trick is needed). */
+  shedQty: number
+  /** True when the rung is below the exchange minimum and uses the open-then-shed trick. */
+  usesTrick: boolean
+  /** Resulting exposure after shedding (openQty - shedQty). */
+  netQty: number
+  /** Net notional (netQty * price). */
+  notional: number
+  warning?: string
+}
+
+/**
+ * Sizes one builder rung from its margin slice. When the target quantity is
+ * below the exchange minimum, opens `target + min` and sheds `min` via a
+ * reduce-only order so the net exposure stays at the tiny target. (Reduce
+ * orders also obey the minimum, hence opening `target + min` rather than min.)
+ */
+export function planBuilderRung(args: {
+  price: number
+  targetMargin: number
+  leverage: number
+  spec: SymbolSpec
+}): BuilderRungSizing {
+  const { price, targetMargin, leverage, spec } = args
+  const targetQty = qtyFromMargin(targetMargin, price, leverage, spec.basePrecision)
+  const min = spec.minTradeVolume
+
+  let openQty = targetQty
+  let shedQty = 0
+  let usesTrick = false
+  let warning: string | undefined
+
+  if (min > 0 && targetQty < min) {
+    usesTrick = true
+    openQty = roundToPrecision(targetQty + min, spec.basePrecision)
+    shedQty = min
+  }
+
+  const netQty = Math.max(0, roundToPrecision(openQty - shedQty, spec.basePrecision))
+  if (targetQty <= 0) warning = 'Rung size rounds to zero — raise the budget or leverage, or use fewer rungs.'
+
+  return {
+    price,
+    targetMargin,
+    targetQty,
+    openQty,
+    shedQty,
+    usesTrick,
+    netQty,
+    notional: netQty * price,
+    warning,
+  }
+}
+
 export interface OrderProjection {
   side: 'LONG' | 'SHORT'
   entry: number

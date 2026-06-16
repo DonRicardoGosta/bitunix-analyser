@@ -79,6 +79,30 @@ export const STRADDLE = {
 } as const
 
 /**
+ * Position Builder (laddered scale-in) construction & gating.
+ *
+ * Splits a small margin budget across several resting limit orders at key
+ * levels in the build direction (supports below for a LONG build, resistances
+ * above for a SHORT build). Each rung is tiny so a drastic adverse move neither
+ * liquidates nor stops the position out prematurely; a single shared TP/SL is
+ * attached to every rung.
+ */
+export const BUILDER = {
+  defaultBudget: 5, // default max usable margin (USDT) split across the ladder
+  defaultRungs: 5, // default number of ladder rungs
+  minRungs: 2,
+  maxRungs: 8,
+  minLevelStrength: 0.3, // levels weaker than this are not used as rungs
+  maxSpanAtrMult: 6, // ladder may reach at most this many ATR from price...
+  maxSpanPct: 0.06, // ...or this fraction of price, whichever is larger
+  minTpR: 1.2, // take-profit must be at least this many R from the avg entry
+  fallbackTpR: 2, // R multiple for the TP when no structural target qualifies
+  stopBufferAtr: 1.5, // stop sits this many ATR beyond the deepest rung...
+  stopBufferPct: 0.01, // ...or this fraction of price, whichever is larger
+  tickOffsetTicks: 1, // shed (reduce-only) order offset toward profit, in price ticks
+} as const
+
+/**
  * Entry-quality evaluation for the single-direction order ticket. Judges
  * whether *now* is a good point to enter, relative to the plan's entry zone,
  * the directional bias, the higher-timeframe trend, and the backtest edge.

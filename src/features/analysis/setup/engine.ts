@@ -20,6 +20,7 @@ import {
 import { backtestSignal, type BacktestStats } from './backtest'
 import { backtestRangeReversal } from './rangeBacktest'
 import { buildRangeStraddle, type RangeStraddlePlan } from './straddle'
+import { buildPositionBuilder, suggestBuildSide, type PositionBuilderPlan } from './builder'
 import { detectPatterns, type DetectedPattern } from './patterns'
 import { computeReversalRiskBySide, type ReversalRiskBySide, type MarketContext } from './reversalRisk'
 import { BACKTEST, HTF, MAX_TOTAL_WEIGHT, PLAN, WEIGHTS } from './config'
@@ -28,6 +29,7 @@ export type { FactorScore, Regime } from './signal'
 export type { BacktestStats } from './backtest'
 export type { RangeBacktestStats } from './rangeBacktest'
 export type { RangeStraddlePlan, RangeStraddleLeg } from './straddle'
+export type { PositionBuilderPlan, BuilderRung } from './builder'
 export type { DetectedPattern, PatternId, PatternDirection } from './patterns'
 export type {
   ReversalRisk,
@@ -91,6 +93,8 @@ export interface SetupResult {
   short: TradePlan
   /** Both-directions range straddle at strong levels (check `.valid` before use). */
   straddle: RangeStraddlePlan
+  /** Laddered scale-in (Position Builder) for the suggested side at default rung count. */
+  builder: PositionBuilderPlan
   backtest: BacktestStats | null
   /** Entry-signalling candlestick / price-action patterns completing near now. */
   patterns: DetectedPattern[]
@@ -600,6 +604,17 @@ export function buildSetup(input: SetupInput): SetupResult | null {
   const rangeBacktest = backtestRangeReversal(candles)
   const straddle = buildRangeStraddle({ price, levels, atr, regime, backtest: rangeBacktest })
 
+  // Position Builder (laddered scale-in) for the suggested side at default rungs.
+  const builder = buildPositionBuilder({
+    side: suggestBuildSide(htfValue, bias),
+    price,
+    levels,
+    atr,
+    regime,
+    htfValue,
+    bias,
+  })
+
   // Historical validation of the candle-derived signal.
   const backtest = backtestSignal(candles)
 
@@ -623,6 +638,7 @@ export function buildSetup(input: SetupInput): SetupResult | null {
     long,
     short,
     straddle,
+    builder,
     backtest,
     patterns,
     reversalRisk,

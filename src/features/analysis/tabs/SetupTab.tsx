@@ -12,10 +12,12 @@ import { getFundingRate, getKline } from '../../../lib/bitunix/rest'
 import { parseKlines, type Candle } from '../../../lib/candles'
 import {
   buildSetup,
+  buildPositionBuilder,
   type SetupResult,
   type TradePlan,
   type RangeStraddlePlan,
   type RangeStraddleLeg,
+  type PositionBuilderPlan,
   type DetectedPattern,
   type ReversalRisk,
   type ReversalLevel,
@@ -71,10 +73,20 @@ export function SetupTab() {
   const [showLevels, setShowLevels] = useState(true)
   const tradeMode = useUiPrefs((s) => s.ticketTradeMode)
   const setTradeMode = (m: TradeMode) => useUiPrefs.getState().setTicket({ ticketTradeMode: m })
+  const builderRungs = useUiPrefs((s) => s.ticketBuilderRungs)
   const userPickedRef = useRef(false)
   const chooseSide = (s: 'LONG' | 'SHORT') => {
     userPickedRef.current = true
     setTradeSideState(s)
+  }
+
+  // Position Builder direction — follows the engine's suggestion until the user
+  // explicitly picks a side.
+  const [builderSide, setBuilderSideState] = useState<'LONG' | 'SHORT'>('LONG')
+  const builderPickedRef = useRef(false)
+  const chooseBuilderSide = (s: 'LONG' | 'SHORT') => {
+    builderPickedRef.current = true
+    setBuilderSideState(s)
   }
 
   const setup = useMemo<SetupResult | null>(() => {
@@ -97,10 +109,33 @@ export function SetupTab() {
   const preferred: 'LONG' | 'SHORT' = setup ? (setup.bias >= 0 ? 'LONG' : 'SHORT') : 'LONG'
   useEffect(() => {
     userPickedRef.current = false
+    builderPickedRef.current = false
   }, [symbol])
   useEffect(() => {
     if (!userPickedRef.current) setTradeSideState(preferred)
   }, [preferred, symbol])
+
+  // Follow the builder's suggested side until the user explicitly picks one.
+  const suggestedBuilderSide = setup?.builder.suggestedSide ?? 'LONG'
+  useEffect(() => {
+    if (!builderPickedRef.current) setBuilderSideState(suggestedBuilderSide)
+  }, [suggestedBuilderSide, symbol])
+
+  // Recompute the ladder for the chosen side + rung count (the engine's
+  // SetupResult.builder only covers the suggested side at the default count).
+  const builderPlan = useMemo<PositionBuilderPlan | null>(() => {
+    if (!setup) return null
+    return buildPositionBuilder({
+      side: builderSide,
+      price: setup.price,
+      levels: setup.levels,
+      atr: setup.atr,
+      regime: setup.regime,
+      htfValue: setup.htfTrend,
+      bias: setup.bias,
+      rungs: builderRungs,
+    })
+  }, [setup, builderSide, builderRungs])
 
   const lines = useMemo<PriceLineDef[]>(() => {
     if (!setup) return []
@@ -114,6 +149,24 @@ export function SetupTab() {
         { price: s.short!.tp, color: '#ef4444', title: 'SHORT TP · support', width: 2 },
         { price: s.long!.stop, color: '#f43f5e', title: 'LONG stop', dashed: true },
         { price: s.short!.stop, color: '#f43f5e', title: 'SHORT stop', dashed: true },
+      )
+      return out
+    }
+
+    if (tradeMode === 'builder' && builderPlan) {
+      const isLong = builderPlan.side === 'LONG'
+      builderPlan.rungs.forEach((r, i) =>
+        out.push({
+          price: r.price,
+          color: isLong ? 'rgba(34,197,94,0.5)' : 'rgba(239,68,68,0.5)',
+          title: `Rung ${i + 1}${r.level ? ` · ${r.level.sources[0]}` : ''}`,
+          dashed: true,
+        }),
+      )
+      out.push(
+        { price: builderPlan.avgEntry, color: '#94a3b8', title: 'Avg entry', width: 2 },
+        { price: builderPlan.tp, color: '#22c55e', title: 'TP', width: 2 },
+        { price: builderPlan.stop, color: '#f43f5e', title: 'Stop', dashed: true },
       )
       return out
     }
@@ -138,7 +191,7 @@ export function SetupTab() {
       }
     }
     return out
-  }, [setup, tradeSide, showLevels, tradeMode])
+  }, [setup, tradeSide, showLevels, tradeMode, builderPlan])
 
   const markers = useMemo<ChartMarker[]>(() => {
     if (!setup) return []
@@ -185,7 +238,7 @@ export function SetupTab() {
             ? setup.reversalRisk.long.score >= setup.reversalRisk.short.score
               ? setup.reversalRisk.long
               : setup.reversalRisk.short
-            : tradeSide === 'LONG'
+            : (tradeMode === 'builder' ? builderSide : tradeSide) === 'LONG'
               ? setup.reversalRisk.long
               : setup.reversalRisk.short
         }
@@ -196,12 +249,15 @@ export function SetupTab() {
         <p className="text-xs text-zinc-500">
           {tradeMode === 'both'
             ? 'Both directions: open a LONG and a SHORT at once, each targeting the opposite strong level. Profits when price oscillates in the range.'
-            : 'Single: one-sided LONG or SHORT plan.'}
+            : tradeMode === 'builder'
+              ? 'Position builder: split a small margin budget across tiny resting limit orders at key levels, with one shared TP and a wide stop — scale into a position without getting liquidated on a sharp move.'
+              : 'Single: one-sided LONG or SHORT plan.'}
         </p>
         <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
           {([
             ['single', 'Single'],
             ['both', 'Both directions'],
+            ['builder', 'Position builder'],
           ] as const).map(([m, label]) => (
             <button
               key={m}
@@ -219,6 +275,16 @@ export function SetupTab() {
 
       {tradeMode === 'both' ? (
         <StraddleCard straddle={setup.straddle} interval={interval} />
+      ) : tradeMode === 'builder' ? (
+        builderPlan ? (
+          <BuilderCard
+            plan={builderPlan}
+            side={builderSide}
+            onSideChange={chooseBuilderSide}
+            rungs={builderRungs}
+            onRungsChange={(n) => useUiPrefs.getState().setTicket({ ticketBuilderRungs: n })}
+          />
+        ) : null
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <PlanCard
@@ -245,6 +311,9 @@ export function SetupTab() {
         long={setup.long}
         short={setup.short}
         straddle={setup.straddle}
+        builder={builderPlan ?? setup.builder}
+        builderSide={builderSide}
+        onBuilderSideChange={chooseBuilderSide}
         tradeMode={tradeMode}
         onTradeModeChange={setTradeMode}
         currentPrice={setup.price || lastPrice}
@@ -799,6 +868,114 @@ function LegBox({ label, tone, leg }: { label: string; tone: 'up' | 'down'; leg:
         <div className="text-[11px] text-zinc-600">n/a</div>
       )}
     </div>
+  )
+}
+
+function BuilderCard({
+  plan,
+  side,
+  onSideChange,
+  rungs,
+  onRungsChange,
+}: {
+  plan: PositionBuilderPlan
+  side: 'LONG' | 'SHORT'
+  onSideChange: (s: 'LONG' | 'SHORT') => void
+  rungs: number
+  onRungsChange: (n: number) => void
+}) {
+  const isLong = side === 'LONG'
+  return (
+    <section className={clsx('panel p-4', plan.valid ? 'ring-2 ring-cyan-500/60' : 'ring-1 ring-zinc-700/60')}>
+      <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="accent">Position builder · laddered scale-in</Badge>
+          {plan.valid ? <Badge tone="up">Valid setup</Badge> : <Badge tone="warn">Not valid here</Badge>}
+          <Badge tone="neutral">Suggested: {plan.suggestedSide}</Badge>
+        </div>
+        <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+          {(['LONG', 'SHORT'] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => onSideChange(s)}
+              className={clsx(
+                'rounded-md px-3 py-1 text-xs font-semibold',
+                side === s
+                  ? s === 'LONG'
+                    ? 'bg-emerald-500 text-zinc-950'
+                    : 'bg-rose-500 text-zinc-950'
+                  : 'text-zinc-400 hover:text-zinc-200',
+              )}
+            >
+              Build {s}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Metric label="Avg entry" value={fmtPrice(plan.avgEntry)} accent />
+        <Metric label="Shared TP" value={fmtPrice(plan.tp)} tone="up" />
+        <Metric label="Shared stop" value={fmtPrice(plan.stop)} tone="down" />
+        <Metric label="R:R (avg)" value={plan.rr ? plan.rr.toFixed(2) : '—'} />
+        <Metric label="Ladder width" value={`${(plan.rangePct * 100).toFixed(2)}%`} />
+        <Metric label="Rungs" value={`${plan.rungs.length}`} />
+      </div>
+
+      <div className="mt-3">
+        <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-zinc-500">
+          <span>Rungs</span>
+          <span className="tabular text-zinc-300">{rungs}</span>
+        </div>
+        <input
+          type="range"
+          min={2}
+          max={8}
+          step={1}
+          value={rungs}
+          onChange={(e) => onRungsChange(Number(e.target.value))}
+          className="w-full accent-cyan-400"
+        />
+      </div>
+
+      <div className="mt-3 max-h-60 overflow-y-auto rounded-lg border border-zinc-800">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-[#0c111b]">
+            <tr className="text-left text-[10px] uppercase tracking-wide text-zinc-500">
+              <th className="px-2 py-1">#</th>
+              <th className="px-2 py-1">Limit price</th>
+              <th className="px-2 py-1">Source</th>
+              <th className="px-2 py-1 text-right">Budget</th>
+            </tr>
+          </thead>
+          <tbody>
+            {plan.rungs.map((r, i) => (
+              <tr key={i} className="border-b border-zinc-800/40">
+                <td className="px-2 py-1 tabular text-zinc-500">{i + 1}</td>
+                <td className={clsx('px-2 py-1 tabular font-medium', isLong ? 'text-emerald-300' : 'text-rose-300')}>
+                  {fmtPrice(r.price)}
+                </td>
+                <td className="px-2 py-1 text-zinc-400">{r.level ? r.level.sources.join(', ') : 'ATR-spaced'}</td>
+                <td className="px-2 py-1 text-right tabular text-zinc-400">{(r.weight * 100).toFixed(0)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {plan.note && <p className="mt-3 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{plan.note}</p>}
+
+      {plan.reasons.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs text-zinc-400">
+          {plan.reasons.map((r, i) => (
+            <li key={i} className="flex gap-1.5">
+              <span className="text-zinc-600">•</span>
+              {r}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 

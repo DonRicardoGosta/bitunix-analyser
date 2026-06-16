@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import type { TradePlan, RangeStraddlePlan, RangeStraddleLeg, BacktestStats } from './engine'
+import type { TradePlan, RangeStraddlePlan, RangeStraddleLeg, BacktestStats, PositionBuilderPlan } from './engine'
 import { evaluateEntry, type EntryQuality } from './entryQuality'
 import {
   projectOrder,
+  planBuilderRung,
   marginFromQty,
   qtyFromMargin,
   roundToPrecision,
   type OrderProjection,
+  type BuilderRungSizing,
   type TpMode,
 } from './order'
+import { BUILDER } from './config'
 import { useSymbolSpecs } from '../useSymbolSpecs'
 import { useCredentials } from '../../../store/credentials'
 import { useUiPrefs, type TicketSizingMode, type TradeMode } from '../../../store/uiPrefs'
@@ -32,6 +35,9 @@ interface Props {
   long: TradePlan
   short: TradePlan
   straddle: RangeStraddlePlan
+  builder: PositionBuilderPlan
+  builderSide: 'LONG' | 'SHORT'
+  onBuilderSideChange: (s: 'LONG' | 'SHORT') => void
   tradeMode: TradeMode
   onTradeModeChange: (m: TradeMode) => void
   currentPrice: number
@@ -55,6 +61,9 @@ export function OrderTicket({
   long,
   short,
   straddle,
+  builder,
+  builderSide,
+  onBuilderSideChange,
   tradeMode,
   onTradeModeChange,
   currentPrice,
@@ -65,6 +74,8 @@ export function OrderTicket({
 }: Props) {
   const plan = side === 'LONG' ? long : short
   const both = tradeMode === 'both'
+  const isBuilder = tradeMode === 'builder'
+  const isSingle = tradeMode === 'single'
   const { spec } = useSymbolSpecs(symbol)
   const marginCoin = useCredentials((s) => s.marginCoin)
   const hasKeys = useCredentials((s) => s.hasKeys())
@@ -80,6 +91,8 @@ export function OrderTicket({
   const tpMode = useUiPrefs((s) => s.ticketTpMode)
   const split = useUiPrefs((s) => s.ticketSplit)
   const straddleSplit = useUiPrefs((s) => s.ticketStraddleSplit)
+  const builderBudget = useUiPrefs((s) => s.ticketBuilderBudget)
+  const builderRungsCount = useUiPrefs((s) => s.ticketBuilderRungs)
   const setTicket = useUiPrefs((s) => s.setTicket)
   const setLeverage = (v: number) => setTicket({ ticketLeverage: v })
   const setMargin = (v: string) => setTicket({ ticketMargin: v })
@@ -89,6 +102,8 @@ export function OrderTicket({
   const setTpMode = (v: TpMode) => setTicket({ ticketTpMode: v })
   const setSplit = (v: number) => setTicket({ ticketSplit: v })
   const setStraddleSplit = (v: number) => setTicket({ ticketStraddleSplit: v })
+  const setBuilderBudget = (v: string) => setTicket({ ticketBuilderBudget: v })
+  const setBuilderRungs = (v: number) => setTicket({ ticketBuilderRungs: v })
 
   const [entry, setEntry] = useState('')
   const [stop, setStop] = useState('')
@@ -216,6 +231,63 @@ export function OrderTicket({
   const straddleWarnings = [...(longProj?.warnings ?? []), ...(shortProj?.warnings ?? [])]
   const straddleNotices = [...(longProj?.notices ?? []), ...(shortProj?.notices ?? [])]
 
+  // ---- Position Builder sizing ----
+  // Split the budget across rungs; each rung is sized from its share, applying
+  // the open-then-shed trick when the target is below the exchange minimum.
+  const builderRungSizings = useMemo<BuilderRungSizing[]>(() => {
+    if (!isBuilder) return []
+    const budget = toNum(builderBudget)
+    if (budget <= 0) return []
+    return builder.rungs.map((r) =>
+      planBuilderRung({ price: r.price, targetMargin: budget * r.weight, leverage, spec }),
+    )
+  }, [isBuilder, builder, builderBudget, leverage, spec])
+
+  const builderNetQty = builderRungSizings.reduce((a, s) => a + s.netQty, 0)
+  const builderNetNotional = builderRungSizings.reduce((a, s) => a + s.netQty * s.price, 0)
+  const builderNetMargin = leverage > 0 ? builderNetNotional / leverage : 0
+  const builderAvgEntry = builderNetQty > 0 ? builderNetNotional / builderNetQty : builder.avgEntry
+  const builderUsesTrick = builderRungSizings.some((s) => s.usesTrick)
+
+  // Aggregate projection: avgEntry is qty-weighted, so P&L at the shared TP/stop
+  // is exact; the liquidation estimate uses the same average entry.
+  const builderProj = useMemo<OrderProjection | null>(() => {
+    if (!isBuilder || builderNetQty <= 0) return null
+    return projectOrder({
+      side: builder.side,
+      entry: builderAvgEntry,
+      stop: builder.stop,
+      tp1: builder.tp,
+      tp2: builder.tp,
+      leverage,
+      margin: builderNetMargin,
+      tpMode: 'TP1',
+      split: 1,
+      spec,
+      marginMode,
+      availableBalance,
+    })
+  }, [isBuilder, builder, builderAvgEntry, builderNetMargin, builderNetQty, leverage, spec, marginMode, availableBalance])
+
+  const builderWarnings = useMemo<string[]>(() => {
+    if (!isBuilder) return []
+    const out: string[] = []
+    if (toNum(builderBudget) <= 0) out.push('Set a budget above 0.')
+    else if (builderRungSizings.length === 0 || builderNetQty <= 0)
+      out.push('No rung is large enough to open at this budget/leverage — raise the budget or leverage, or use fewer rungs.')
+    for (const s of builderRungSizings) if (s.warning && !out.includes(s.warning)) out.push(s.warning)
+    if (availableBalance !== undefined && builderNetMargin > availableBalance)
+      out.push(`Total margin ${fmtUsd(builderNetMargin)} exceeds your available balance.`)
+    return out
+  }, [isBuilder, builderBudget, builderRungSizings, builderNetQty, builderNetMargin, availableBalance])
+
+  const builderNotices = useMemo<string[]>(() => {
+    if (!isBuilder || !builderUsesTrick) return []
+    return [
+      'Some rungs are below the exchange minimum: each opens a larger order and immediately sheds the excess with a reduce-only order, so the net stays tiny. This briefly uses extra margin when a rung fills.',
+    ]
+  }, [isBuilder, builderUsesTrick])
+
   const presets = LEVERAGE_PRESETS.filter((p) => p >= spec.minLeverage && p <= spec.maxLeverage)
   const canSubmit =
     hasKeys && liveTradingEnabled && projection.qty > 0 && projection.warnings.length === 0 && submit.kind !== 'submitting'
@@ -230,6 +302,8 @@ export function OrderTicket({
     (shortProj?.qty ?? 0) > 0 &&
     straddleWarnings.length === 0 &&
     submit.kind !== 'submitting'
+  const canSubmitBuilder =
+    hasKeys && liveTradingEnabled && builderNetQty > 0 && builderWarnings.length === 0 && submit.kind !== 'submitting'
 
   async function doSubmit() {
     setShowConfirm(false)
@@ -346,6 +420,88 @@ export function OrderTicket({
     }
   }
 
+  // Places the laddered builder orders in advance: a resting LIMIT open order at
+  // each rung (with the shared TP/SL), plus — for sub-minimum rungs — a paired
+  // reduce-only LIMIT order priced one tick into profit so it sheds the excess
+  // right after the open fills, leaving only the tiny target exposure.
+  async function doSubmitBuilder() {
+    setShowConfirm(false)
+    const active = builderRungSizings.filter((r) => r.openQty > 0)
+    if (active.length === 0) return
+    const orderIds: string[] = []
+    try {
+      setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
+      let hedge = positionMode === 'HEDGE'
+      try {
+        await changePositionMode('HEDGE')
+        hedge = true
+      } catch {
+        // Can't switch while positions/orders exist — keep the known mode.
+      }
+
+      setSubmit({ kind: 'submitting', step: 'Setting margin mode…' })
+      try {
+        await changeMarginMode(symbol, marginMode, marginCoin)
+      } catch {
+        // Margin mode can't change with an open position/order — ignore.
+      }
+
+      setSubmit({ kind: 'submitting', step: 'Setting leverage…' })
+      await changeLeverage(symbol, leverage, marginCoin)
+
+      const isLong = builder.side === 'LONG'
+      const tp = String(roundToPrecision(builder.tp, spec.quotePrecision))
+      const sl = String(roundToPrecision(builder.stop, spec.quotePrecision))
+      const tickOffset = (1 / Math.pow(10, spec.quotePrecision)) * BUILDER.tickOffsetTicks
+
+      const total = active.reduce((a, r) => a + 1 + (r.usesTrick && r.shedQty > 0 ? 1 : 0), 0)
+      let placed = 0
+
+      for (const r of active) {
+        placed++
+        setSubmit({ kind: 'submitting', step: `Placing rung ${placed}/${total}…` })
+        const openParams: PlaceOrderParams = {
+          symbol,
+          side: isLong ? 'BUY' : 'SELL',
+          orderType: 'LIMIT',
+          effect: 'GTC',
+          price: String(roundToPrecision(r.price, spec.quotePrecision)),
+          qty: String(r.openQty),
+          tpPrice: tp,
+          tpStopType: 'LAST_PRICE',
+          tpOrderType: 'MARKET',
+          slPrice: sl,
+          slStopType: 'LAST_PRICE',
+          slOrderType: 'MARKET',
+        }
+        if (hedge) openParams.tradeSide = 'OPEN'
+        const openRes = await placeOrder(openParams)
+        if (openRes?.orderId) orderIds.push(openRes.orderId)
+
+        if (r.usesTrick && r.shedQty > 0) {
+          placed++
+          setSubmit({ kind: 'submitting', step: `Shedding rung ${placed}/${total}…` })
+          const shedPrice = isLong ? r.price + tickOffset : r.price - tickOffset
+          const shedParams: PlaceOrderParams = {
+            symbol,
+            side: isLong ? 'SELL' : 'BUY',
+            orderType: 'LIMIT',
+            effect: 'GTC',
+            price: String(roundToPrecision(shedPrice, spec.quotePrecision)),
+            qty: String(r.shedQty),
+          }
+          if (hedge) shedParams.tradeSide = 'CLOSE'
+          else shedParams.reduceOnly = true
+          const shedRes = await placeOrder(shedParams)
+          if (shedRes?.orderId) orderIds.push(shedRes.orderId)
+        }
+      }
+      setSubmit({ kind: 'done', orderIds })
+    } catch (e) {
+      setSubmit({ kind: 'error', message: e instanceof Error ? e.message : String(e), orderIds })
+    }
+  }
+
   function resetPrices() {
     editedRef.current = { entry: false, stop: false, tp1: false, tp2: false }
     const q = spec.quotePrecision
@@ -392,6 +548,7 @@ export function OrderTicket({
             {([
               ['single', 'Single'],
               ['both', 'Both'],
+              ['builder', 'Builder'],
             ] as const).map(([m, label]) => (
               <button
                 key={m}
@@ -405,7 +562,7 @@ export function OrderTicket({
               </button>
             ))}
           </div>
-          {!both && (
+          {isSingle && (
             <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
               {(['LONG', 'SHORT'] as const).map((s) => (
                 <button
@@ -421,6 +578,26 @@ export function OrderTicket({
                   )}
                 >
                   {s}
+                </button>
+              ))}
+            </div>
+          )}
+          {isBuilder && (
+            <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
+              {(['LONG', 'SHORT'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => onBuilderSideChange(s)}
+                  className={clsx(
+                    'rounded-md px-3 py-1 text-xs font-semibold',
+                    builderSide === s
+                      ? s === 'LONG'
+                        ? 'bg-emerald-500 text-zinc-950'
+                        : 'bg-rose-500 text-zinc-950'
+                      : 'text-zinc-400 hover:text-zinc-200',
+                  )}
+                >
+                  Build {s}
                 </button>
               ))}
             </div>
@@ -473,7 +650,8 @@ export function OrderTicket({
             </div>
           </div>
 
-          {/* Size: USDT margin or base qty */}
+          {/* Size: USDT margin or base qty (single / both) */}
+          {!isBuilder && (
           <div>
             <div className="mb-1 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -531,9 +709,49 @@ export function OrderTicket({
               </div>
             ) : null}
           </div>
+          )}
 
-          {/* Order type */}
-          {!both && (
+          {/* Position builder size: budget + rung count */}
+          {isBuilder && (
+            <div className="flex flex-col gap-3">
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wide text-zinc-500">
+                    Budget · max margin ({marginCoin})
+                  </span>
+                  {availableBalance ? (
+                    <span className="text-[10px] text-zinc-600">avail {fmtUsd(availableBalance)}</span>
+                  ) : null}
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.1"
+                  value={builderBudget}
+                  onChange={(e) => setBuilderBudget(e.target.value)}
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
+                />
+              </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between text-[11px] uppercase tracking-wide text-zinc-500">
+                  <span>Rungs</span>
+                  <span className="tabular text-zinc-300">{builderRungsCount}</span>
+                </div>
+                <input
+                  type="range"
+                  min={2}
+                  max={8}
+                  step={1}
+                  value={builderRungsCount}
+                  onChange={(e) => setBuilderRungs(Number(e.target.value))}
+                  className="w-full accent-cyan-400"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Order type (single mode) */}
+          {isSingle && (
             <div className="flex items-center gap-2">
               <span className="text-[11px] uppercase tracking-wide text-zinc-500">Order</span>
               <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
@@ -576,7 +794,7 @@ export function OrderTicket({
           </div>
 
           {/* Prices (single mode) */}
-          {!both && (
+          {isSingle && (
             <div className="grid grid-cols-2 gap-2">
               <PriceInput
                 label={orderType === 'MARKET' ? 'Entry (market)' : 'Entry'}
@@ -591,7 +809,7 @@ export function OrderTicket({
           )}
 
           {/* TP selector (single mode) */}
-          {!both && (
+          {isSingle && (
             <div>
               <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">Take profit</div>
               <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 p-0.5">
@@ -636,11 +854,14 @@ export function OrderTicket({
           {both && (
             <StraddleInputs straddle={straddle} split={straddleSplit} onSplitChange={setStraddleSplit} />
           )}
+
+          {/* Builder ladder summary (builder mode) */}
+          {isBuilder && <BuilderInputs plan={builder} />}
         </div>
 
         {/* Projection */}
         <div className="flex flex-col gap-3">
-          {!both && (
+          {isSingle && (
             <>
               <div className="grid grid-cols-2 gap-2">
                 {sizingMode === 'margin' ? (
@@ -698,15 +919,33 @@ export function OrderTicket({
             />
           )}
 
-          {(both ? straddleWarnings : projection.warnings).map((w, i) => (
+          {isBuilder && (
+            <BuilderProjection
+              plan={builder}
+              rungs={builderRungSizings}
+              proj={builderProj}
+              netQty={builderNetQty}
+              netMargin={builderNetMargin}
+              avgEntry={builderAvgEntry}
+              baseSymbol={baseSymbol}
+              marginCoin={marginCoin}
+            />
+          )}
+
+          {(both ? straddleWarnings : isBuilder ? builderWarnings : projection.warnings).map((w, i) => (
             <p key={`w${i}`} className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{w}</p>
           ))}
-          {(both ? straddleNotices : projection.notices).map((n, i) => (
+          {(both ? straddleNotices : isBuilder ? builderNotices : projection.notices).map((n, i) => (
             <p key={`n${i}`} className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">{n}</p>
           ))}
           {both && !straddle.valid && (
             <p className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
               {straddle.note ?? 'This range straddle did not pass validation.'} You can still open it — higher risk.
+            </p>
+          )}
+          {isBuilder && !builder.valid && (
+            <p className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+              {builder.note ?? 'This ladder did not pass validation.'} You can still place it — higher risk.
             </p>
           )}
 
@@ -723,12 +962,14 @@ export function OrderTicket({
             Orders open in Hedge mode (set automatically).
             {both
               ? ' Both legs are MARKET orders opened at once; the long targets the resistance and the short targets the support.'
-              : ' For multiple same-direction positions per pair, enable '}
-            {!both && <span className="text-zinc-300">Multi-Trade</span>}
-            {!both && " once in the Bitunix app — it isn't available through the API."}
+              : isBuilder
+                ? ' All rungs are resting LIMIT orders placed in advance at key levels, each carrying the shared TP and stop.'
+                : ' For multiple same-direction positions per pair, enable '}
+            {isSingle && <span className="text-zinc-300">Multi-Trade</span>}
+            {isSingle && " once in the Bitunix app — it isn't available through the API."}
           </p>
 
-          {!both && <EntryQualityCard quality={entryQuality} side={side} />}
+          {isSingle && <EntryQualityCard quality={entryQuality} side={side} />}
 
           {both ? (
             <button
@@ -744,6 +985,21 @@ export function OrderTicket({
                 : straddle.valid
                   ? `Open BOTH on ${symbol}`
                   : `Open BOTH anyway on ${symbol}`}
+            </button>
+          ) : isBuilder ? (
+            <button
+              onClick={() => setShowConfirm(true)}
+              disabled={!canSubmitBuilder}
+              className={clsx(
+                'rounded-lg px-4 py-2.5 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40',
+                builder.valid ? 'bg-cyan-500 hover:bg-cyan-400' : 'bg-amber-500 hover:bg-amber-400',
+              )}
+            >
+              {submit.kind === 'submitting'
+                ? submit.step
+                : builder.valid
+                  ? `Build ${builder.side} on ${symbol}`
+                  : `Build ${builder.side} anyway on ${symbol}`}
             </button>
           ) : (
             <button
@@ -780,7 +1036,7 @@ export function OrderTicket({
         </div>
       </div>
 
-      {showConfirm && !both && (
+      {showConfirm && isSingle && (
         <ConfirmModal
           symbol={symbol}
           side={side}
@@ -794,6 +1050,22 @@ export function OrderTicket({
           entryQuality={entryQuality}
           onCancel={() => setShowConfirm(false)}
           onConfirm={doSubmit}
+        />
+      )}
+      {showConfirm && isBuilder && (
+        <BuilderConfirmModal
+          symbol={symbol}
+          marginMode={marginMode}
+          leverage={leverage}
+          marginCoin={marginCoin}
+          baseSymbol={baseSymbol}
+          plan={builder}
+          rungs={builderRungSizings}
+          proj={builderProj}
+          netQty={builderNetQty}
+          netMargin={builderNetMargin}
+          onCancel={() => setShowConfirm(false)}
+          onConfirm={doSubmitBuilder}
         />
       )}
       {showConfirm && both && longProj && shortProj && (
@@ -1288,6 +1560,214 @@ function StraddleConfirmModal({
             className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-cyan-400"
           >
             Confirm both
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BuilderInputs({ plan }: { plan: PositionBuilderPlan }) {
+  const isLong = plan.side === 'LONG'
+  return (
+    <div className="rounded-lg border border-zinc-800 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[11px] uppercase tracking-wide text-zinc-500">Ladder · {plan.rungs.length} rungs</span>
+        <span className={clsx('text-xs font-semibold', isLong ? 'text-emerald-400' : 'text-rose-400')}>
+          Build {plan.side}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-sm">
+        <div className="flex flex-col">
+          <span className="text-[10px] uppercase tracking-wide text-zinc-500">Avg entry</span>
+          <span className="tabular text-zinc-200">{fmtPrice(plan.avgEntry)}</span>
+        </div>
+        <div className="flex flex-col">
+          <span className="text-[10px] uppercase tracking-wide text-zinc-500">Shared TP</span>
+          <span className="tabular text-emerald-300">{fmtPrice(plan.tp)}</span>
+        </div>
+        <div className="flex flex-col">
+          <span className="text-[10px] uppercase tracking-wide text-zinc-500">Shared stop</span>
+          <span className="tabular text-rose-300">{fmtPrice(plan.stop)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BuilderProjection({
+  plan,
+  rungs,
+  proj,
+  netQty,
+  netMargin,
+  avgEntry,
+  baseSymbol,
+  marginCoin,
+}: {
+  plan: PositionBuilderPlan
+  rungs: BuilderRungSizing[]
+  proj: OrderProjection | null
+  netQty: number
+  netMargin: number
+  avgEntry: number
+  baseSymbol: string
+  marginCoin: string
+}) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2">
+        <Stat label={`Total margin (${marginCoin})`} value={fmtUsd(netMargin)} />
+        <Stat label="Net size" value={`${fmtCompact(netQty, 4)} ${baseSymbol}`} />
+        <Stat label="Avg entry" value={fmtPrice(avgEntry)} />
+        <Stat label="Est. liq. price" value={fmtPrice(proj?.liqPrice ?? 0)} tone="down" />
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 p-3">
+        <div className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Rungs · resting limit orders</div>
+        <div className="max-h-44 overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-[#0c111b]">
+              <tr className="text-left text-[10px] uppercase tracking-wide text-zinc-500">
+                <th className="py-1 pr-2">Price</th>
+                <th className="py-1 pr-2 text-right">Open</th>
+                <th className="py-1 pr-2 text-right">Shed</th>
+                <th className="py-1 text-right">Net</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rungs.map((r, i) => (
+                <tr key={i} className="border-t border-zinc-800/40">
+                  <td className="py-1 pr-2 tabular text-zinc-300">{fmtPrice(r.price)}</td>
+                  <td className="py-1 pr-2 text-right tabular text-zinc-300">{fmtCompact(r.openQty, 4)}</td>
+                  <td className="py-1 pr-2 text-right tabular text-amber-300">
+                    {r.shedQty > 0 ? fmtCompact(r.shedQty, 4) : '—'}
+                  </td>
+                  <td className="py-1 text-right tabular text-zinc-100">{fmtCompact(r.netQty, 4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 p-3">
+        <div className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">Projected P&amp;L · if every rung fills</div>
+        <div className="flex flex-col gap-1.5 text-sm">
+          <div className="flex items-center justify-between font-medium">
+            <span className="text-zinc-300">At shared TP {fmtPrice(plan.tp)}</span>
+            <span className={pnlColor(proj?.profitTotal ?? 0)}>
+              +{fmtUsd(proj?.profitTotal ?? 0)} ({(proj?.profitRoiPct ?? 0).toFixed(1)}%)
+            </span>
+          </div>
+          <div className="flex items-center justify-between font-medium">
+            <span className="text-zinc-300">At shared stop {fmtPrice(plan.stop)}</span>
+            <span className="text-rose-400">
+              {fmtUsd(proj?.lossPnl ?? 0)} ({(proj?.lossRoiPct ?? 0).toFixed(1)}%)
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400">R:R (avg entry)</span>
+            <span className="tabular text-zinc-200">{plan.rr ? plan.rr.toFixed(2) : '—'}</span>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function BuilderConfirmModal({
+  symbol,
+  marginMode,
+  leverage,
+  marginCoin,
+  baseSymbol,
+  plan,
+  rungs,
+  proj,
+  netQty,
+  netMargin,
+  onCancel,
+  onConfirm,
+}: {
+  symbol: string
+  marginMode: 'CROSS' | 'ISOLATION'
+  leverage: number
+  marginCoin: string
+  baseSymbol: string
+  plan: PositionBuilderPlan
+  rungs: BuilderRungSizing[]
+  proj: OrderProjection | null
+  netQty: number
+  netMargin: number
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const isLong = plan.side === 'LONG'
+  const active = rungs.filter((r) => r.openQty > 0)
+  const orderCount = active.reduce((a, r) => a + 1 + (r.usesTrick && r.shedQty > 0 ? 1 : 0), 0)
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div
+        className="w-full max-w-md rounded-xl border border-zinc-700 bg-[#0c111b] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-base font-semibold text-zinc-100">Confirm position builder · {symbol}</h3>
+        <p className="mt-1 text-xs text-amber-300/80">
+          This places {orderCount} resting order{orderCount === 1 ? '' : 's'} on Bitunix futures (
+          {marginMode === 'CROSS' ? 'cross' : 'isolated'} {leverage}x, hedge mode): a Build {plan.side} ladder of{' '}
+          {active.length} limit rungs, each carrying the shared TP and stop.
+        </p>
+        {!plan.valid && (
+          <p className="mt-2 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+            Warning: {plan.note ?? 'this setup did not pass validation'} — placing anyway is higher risk.
+          </p>
+        )}
+
+        <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+          <Row label="Direction" value={`Build ${plan.side}`} />
+          <Row label="Leverage" value={`${leverage}x`} />
+          <Row label="Margin" value={`${fmtUsd(netMargin)} ${marginCoin}`} />
+          <Row label="Net size" value={`${fmtCompact(netQty, 4)} ${baseSymbol}`} />
+          <Row label="TP" value={fmtPrice(plan.tp)} />
+          <Row label="Stop" value={fmtPrice(plan.stop)} />
+        </div>
+
+        <div className="mt-3 max-h-44 overflow-y-auto rounded-lg border border-zinc-800 p-2 text-xs">
+          {active.map((r, i) => (
+            <div key={i} className="flex justify-between border-b border-zinc-800/40 py-0.5 last:border-0">
+              <span className={clsx('tabular', isLong ? 'text-emerald-300' : 'text-rose-300')}>{fmtPrice(r.price)}</span>
+              <span className="tabular text-zinc-400">
+                open {fmtCompact(r.openQty, 4)}
+                {r.usesTrick ? ` · shed ${fmtCompact(r.shedQty, 4)}` : ''} · net {fmtCompact(r.netQty, 4)}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-3 rounded-lg border border-zinc-800 p-2 text-xs">
+          <div className="flex justify-between">
+            <span className="text-zinc-400">If all rungs fill, at TP</span>
+            <span className="text-emerald-400">+{fmtUsd(proj?.profitTotal ?? 0)}</span>
+          </div>
+          <div className="mt-1 flex justify-between border-t border-zinc-800 pt-1 font-medium">
+            <span className="text-zinc-300">At stop</span>
+            <span className="text-rose-400">{fmtUsd(proj?.lossPnl ?? 0)}</span>
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-cyan-400"
+          >
+            Confirm build
           </button>
         </div>
       </div>
