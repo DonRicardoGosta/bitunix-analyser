@@ -1,4 +1,5 @@
-import type { PendingPositionRaw, TpslOrderRaw } from '../../lib/bitunix/types'
+import type { ParsedPendingPosition } from './positions'
+import type { TpslOrderRaw } from '../../lib/bitunix/types'
 import type { PriceLineDef } from '../../components/charts/chartTypes'
 import { toNum } from '../../lib/format'
 
@@ -69,7 +70,7 @@ function levelLabel(tag: string, kind: 'tp' | 'sl', index: number, total: number
 
 /** Build chart price lines from API position side and all TP/SL trigger orders. */
 export function buildPositionChartLines(
-  positions: PendingPositionRaw[],
+  positions: ParsedPendingPosition[],
   tpslOrders: TpslOrderRaw[] | undefined,
 ): PriceLineDef[] {
   const out: PriceLineDef[] = []

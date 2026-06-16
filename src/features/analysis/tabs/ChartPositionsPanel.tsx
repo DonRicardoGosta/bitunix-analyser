@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import clsx from 'clsx'
-import type { PendingPositionRaw, TpslOrderRaw } from '../../../lib/bitunix/types'
+import type { ParsedPendingPosition } from '../../stats/positions'
+import type { TpslOrderRaw } from '../../../lib/bitunix/types'
 import { useCredentials } from '../../../store/credentials'
 import { useTickers } from '../../../store/tickers'
 import { Badge, Panel } from '../../../components/ui/primitives'
@@ -11,7 +12,7 @@ import { usePositionMutations } from '../../stats/usePositionMutations'
 import { TpslEditModal, type TpslEditTarget } from './TpslEditModal'
 
 interface Props {
-  positions: PendingPositionRaw[]
+  positions: ParsedPendingPosition[]
   tpslOrders: TpslOrderRaw[] | undefined
 }
 
@@ -23,9 +24,9 @@ export function ChartPositionsPanel({ positions, tpslOrders }: Props) {
   const { closeMut, cancelTpslMut, isBusy } = usePositionMutations()
 
   const [editTarget, setEditTarget] = useState<TpslEditTarget | null>(null)
-  const [confirmClose, setConfirmClose] = useState<PendingPositionRaw | null>(null)
+  const [confirmClose, setConfirmClose] = useState<ParsedPendingPosition | null>(null)
   const [cancelTarget, setCancelTarget] = useState<{
-    position: PendingPositionRaw
+    position: ParsedPendingPosition
     orderId: string
     kind: 'tp' | 'sl'
     hasOtherLeg: boolean
@@ -237,7 +238,7 @@ function CloseConfirmModal({
   onCancel,
   onConfirm,
 }: {
-  position: PendingPositionRaw
+  position: ParsedPendingPosition
   mark: number
   pending: boolean
   onCancel: () => void
