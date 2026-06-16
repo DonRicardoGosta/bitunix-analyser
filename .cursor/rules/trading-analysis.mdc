@@ -1,0 +1,62 @@
+---
+description: Trading analysis, setup engine, and statistics domain rules
+globs:
+  - src/features/analysis/**
+  - src/features/stats/**
+  - src/lib/indicators.ts
+  - src/lib/candles.ts
+alwaysApply: false
+---
+
+# Trading analysis domain
+
+## Data sources
+
+| Data | Source | Path |
+|------|--------|------|
+| Account, positions, orders, candles, funding | Bitunix REST + WS | `/bitunix/*`, `wss://fapi.bitunix.com` |
+| Deep order book, OI, long/short, taker, klines | Binance REST + WS | `/binance/*`, `wss://fstream.binance.com` |
+
+Symbols are USD-M perpetuals (e.g. `BTCUSDT`). Bitunix and Binance symbols generally match.
+
+## Setup engine (`src/features/analysis/setup/`)
+
+Modular pipeline — keep concerns separated:
+
+- `signal.ts` — candle factors, regime detection, HTF confirmation
+- `patterns.ts` — candlestick pattern detection
+- `entryQuality.ts` — entry timing/quality scoring
+- `reversalRisk.ts` — adverse reversal risk by side
+- `backtest.ts` / `rangeBacktest.ts` — historical signal validation
+- `straddle.ts` — range-bound dual-leg planning
+- `config.ts` — weights, thresholds, HTF settings (single source of truth)
+- `engine.ts` — orchestrates modules into `SetupResult` / `TradePlan`
+- `order.ts` — order placement helpers (respects `liveTradingEnabled`)
+
+When tuning signals, change `config.ts` constants — don't scatter magic numbers.
+
+## Statistics (`src/features/stats/`)
+
+- `compute.ts` — closed-position analytics (win rate, PF, drawdown, heatmaps)
+- `positions.ts` — open position helpers, TP/SL projection
+- `review.ts` / `usePositionReviews.ts` — advisory close suggestions on market reversal
+- `stopSuggest.ts` — tighten-stop recommendations
+
+Reviews are **advisory only** — never auto-close positions.
+
+## Order ticket safety
+
+- `liveTradingEnabled` must be `true` for real order submission.
+- Straddle and single-leg flows go through confirm modals.
+- Hedge mode is set before opening positions (Multi-Trade prerequisite).
+
+## Indicators
+
+Core indicators in `src/lib/indicators.ts`: EMA, Bollinger, VWAP, RSI, MACD, Stochastic-RSI, ATR.
+Use ATR-normalized distances where the codebase already does (signal factors, stop placement).
+
+## Limitations to preserve in UI copy
+
+- Binance liquidation map is **live-only** (no historical REST).
+- OI / long-short / taker data covers ~30 days.
+- Binance geo-restrictions show a notice; don't treat as a code bug.

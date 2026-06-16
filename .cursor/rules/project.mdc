@@ -1,0 +1,38 @@
+---
+alwaysApply: true
+---
+
+# Bitunix Analytics — project rules
+
+## What this repo is
+
+A **frontend-only** Bitunix USD-M futures analytics terminal. Static React SPA + nginx reverse proxy. No database, no server-side business logic.
+
+## Do
+
+- Keep all exchange logic in `src/lib/bitunix/` and `src/lib/binance/`.
+- Route REST through `/bitunix/*` and `/binance/*` — never call `fapi.bitunix.com` or `fapi.binance.com` directly from fetch (CORS).
+- Use Zustand (`src/store/`) for persisted client state; TanStack Query for fetched data with caching.
+- Put new pages under `src/features/<name>/` and wire routes in `src/App.tsx`.
+- Reuse `Panel`, `StatCard`, `Button`, `Badge` from `src/components/ui/primitives.tsx`.
+- Use existing chart wrappers: `CandlesChart`, `EChart`, `SetupChart` in `src/components/charts/`.
+- Run `npm run lint` and `npm run build` before marking work complete.
+- Write commit messages as `type(scope): subject` with an optional body (Conventional Commits).
+
+## Don't
+
+- Add a backend, database, or server-side API routes.
+- Log, commit, or expose API keys/secrets.
+- Edit `dist/`, `node_modules/`, or generated output.
+- Disable the `liveTradingEnabled` safety gate without explicit user request.
+- Introduce new UI libraries without strong reason — Tailwind + existing primitives are the standard.
+- Add `any` unless unavoidable; prefer explicit types from `src/lib/bitunix/types.ts` and `src/lib/binance/types.ts`.
+
+## Key files
+
+- `vite.config.ts` — dev proxy for `/bitunix` and `/binance`
+- `nginx.conf` — production proxy + static hosting
+- `src/store/credentials.ts` — API keys + live-trading gate
+- `src/features/analysis/setup/engine.ts` — trade setup / signal orchestration
+- `src/lib/bitunix/rest.ts` — signed Bitunix REST client
+- `eslint.config.js` — `react-hooks/set-state-in-effect` and `purity` are intentionally off
