@@ -8,6 +8,7 @@ import { Badge, Panel } from '../../../components/ui/primitives'
 import { fmtPrice, fmtSignedUsd, pnlColor, toNum } from '../../../lib/format'
 import { useSymbolSpecs } from '../useSymbolSpecs'
 import { groupPositionTpslOrders } from '../../stats/positionChart'
+import { positionPnlAt } from '../../stats/positions'
 import { usePositionMutations } from '../../stats/usePositionMutations'
 import { TpslEditModal, type TpslEditTarget } from './TpslEditModal'
 
@@ -60,6 +61,7 @@ export function ChartPositionsPanel({ positions, tpslOrders }: Props) {
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <LevelList
                     title="Take profit"
+                    position={p}
                     levels={tp}
                     tone="tp"
                     onEdit={(level) =>
@@ -77,6 +79,7 @@ export function ChartPositionsPanel({ positions, tpslOrders }: Props) {
                   />
                   <LevelList
                     title="Stop loss"
+                    position={p}
                     levels={sl}
                     tone="sl"
                     onEdit={(level) =>
@@ -171,6 +174,7 @@ export function ChartPositionsPanel({ positions, tpslOrders }: Props) {
 
 function LevelList({
   title,
+  position,
   levels,
   tone,
   onEdit,
@@ -178,12 +182,16 @@ function LevelList({
   disabled,
 }: {
   title: string
+  position: ParsedPendingPosition
   levels: ReturnType<typeof groupPositionTpslOrders>['tp']
   tone: 'tp' | 'sl'
   onEdit: (level: (typeof levels)[number]) => void
   onCancel: (level: (typeof levels)[number]) => void
   disabled: boolean
 }) {
+  const entry = toNum(position.avgOpenPrice)
+  const posQty = toNum(position.qty)
+
   return (
     <div>
       <div
@@ -198,7 +206,10 @@ function LevelList({
         <div className="text-xs text-zinc-600">None set</div>
       ) : (
         <ul className="space-y-1">
-          {levels.map((level) => (
+          {levels.map((level) => {
+            const qty = level.qty > 0 ? level.qty : posQty
+            const pnl = positionPnlAt(position.side, entry, level.price, qty)
+            return (
             <li
               key={`${level.orderId}-${level.kind}-${level.index}`}
               className="flex items-center justify-between gap-2 rounded-md bg-zinc-800/40 px-2 py-1.5 text-xs"
@@ -206,6 +217,9 @@ function LevelList({
               <span className="tabular text-zinc-200">
                 {fmtPrice(level.price)}
                 {level.qty > 0 ? ` · ${fmtPrice(level.qty)}` : ''}
+                {Number.isFinite(pnl) && (
+                  <span className={clsx('ml-1', pnlColor(pnl))}>{fmtSignedUsd(pnl)}</span>
+                )}
               </span>
               <span className="flex gap-1">
                 <button
@@ -224,7 +238,8 @@ function LevelList({
                 </button>
               </span>
             </li>
-          ))}
+            )
+          })}
         </ul>
       )}
     </div>

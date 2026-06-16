@@ -18,6 +18,17 @@ export function parsePendingPosition(p: PendingPositionRaw): ParsedPendingPositi
   return { ...p, side: normalizePositionSide(p.side) }
 }
 
+/** Estimated PnL at a trigger price for the given position size. */
+export function positionPnlAt(
+  side: PositionSide,
+  entry: number,
+  price: number,
+  qty: number,
+): number {
+  if (!Number.isFinite(entry) || !Number.isFinite(price) || !Number.isFinite(qty)) return NaN
+  return side === 'LONG' ? qty * (price - entry) : qty * (entry - price)
+}
+
 export interface PositionTpsl {
   tp: number
   sl: number

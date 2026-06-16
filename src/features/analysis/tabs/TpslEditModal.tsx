@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ParsedPendingPosition } from '../../stats/positions'
 import { roundToPrecision } from '../setup/order'
 import type { SymbolSpec } from '../setup/order'
-import { fmtPrice, toNum } from '../../../lib/format'
+import { fmtPrice, fmtSignedUsd, pnlColor, toNum } from '../../../lib/format'
 import type { PositionTpslLevel } from '../../stats/positionChart'
+import { positionPnlAt } from '../../stats/positions'
 import { buildModifyTpslParams, usePositionMutations } from '../../stats/usePositionMutations'
 
 export type TpslEditMode = 'add-tp' | 'add-sl' | 'edit-tp' | 'edit-sl'
@@ -67,6 +68,10 @@ export function TpslEditModal({ target, spec, mark, onClose }: Props) {
   )
   const qtyError =
     !Number.isFinite(parsedQty) || parsedQty <= 0 ? 'Enter a valid quantity' : null
+  const triggerPnl = useMemo(() => {
+    if (validationError || qtyError) return NaN
+    return positionPnlAt(position.side, entry, parsedPrice, parsedQty)
+  }, [position.side, entry, parsedPrice, parsedQty, validationError, qtyError])
   const pending = addTpslMut.isPending || modifyTpslMut.isPending
   const error = addTpslMut.error ?? modifyTpslMut.error
 
@@ -122,6 +127,20 @@ export function TpslEditModal({ target, spec, mark, onClose }: Props) {
         <p className="mt-1 text-xs text-zinc-400">
           Mark {fmtPrice(mark)} · Entry {fmtPrice(entry)}
         </p>
+        <div className="mt-2 flex flex-wrap gap-3 text-xs">
+          <span className="text-zinc-500">
+            Current uPnL{' '}
+            <span className={pnlColor(toNum(position.unrealizedPNL))}>
+              {fmtSignedUsd(position.unrealizedPNL)}
+            </span>
+          </span>
+          {Number.isFinite(triggerPnl) && (
+            <span className="text-zinc-500">
+              Trigger PnL{' '}
+              <span className={pnlColor(triggerPnl)}>{fmtSignedUsd(triggerPnl)}</span>
+            </span>
+          )}
+        </div>
 
         <div className="mt-4 space-y-3">
           <label className="block text-xs text-zinc-500">
