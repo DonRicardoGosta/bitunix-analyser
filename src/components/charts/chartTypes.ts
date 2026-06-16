@@ -39,4 +39,6 @@ export interface PriceZoneDef {
   subtitle?: string
   /** Level strength 0..1 — drives label text and zone opacity. */
   strength: number
+  /** Resting order-book notional (USDT) in the zone band. */
+  obstacleNotional?: number
 }

@@ -81,7 +81,7 @@ export function ChartTab() {
     if (!showZones || candles.length < 30) return []
     const levels = computeKeyLevels(candles, book, lastPrice)
     const atrVal = lastAtr(candles)
-    return pickChartZones(levels, candles, lastPrice, atrVal)
+    return pickChartZones(levels, candles, lastPrice, atrVal, book)
   }, [showZones, candles, book, lastPrice])
 
   const positionLines = useMemo<PriceLineDef[]>(() => {

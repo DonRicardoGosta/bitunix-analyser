@@ -1,5 +1,7 @@
 import type { Candle } from '../../lib/candles'
 import type { KeyLevel } from './setup/engine'
+import type { ParsedBook } from './orderbook'
+import { restingNotionalInBand } from './orderbook'
 import type { PriceZoneDef } from '../../components/charts/chartTypes'
 
 const MIN_STRENGTH = 0.55
@@ -35,6 +37,9 @@ function mergeOverlappingZones(zones: PriceZoneDef[], halfBand: number): PriceZo
       current.priceHigh = Math.max(current.priceHigh, zone.priceHigh)
       current.strength = Math.max(current.strength, zone.strength)
       current.subtitle = mergeSubtitles(current.subtitle, zone.subtitle)
+      if (zone.obstacleNotional !== undefined) {
+        current.obstacleNotional = (current.obstacleNotional ?? 0) + zone.obstacleNotional
+      }
     } else {
       merged.push({ ...zone })
     }
@@ -49,6 +54,7 @@ export function pickChartZones(
   candles: Candle[],
   price: number,
   atr: number,
+  book?: ParsedBook | null,
 ): PriceZoneDef[] {
   if (!candles.length || !Number.isFinite(price) || price <= 0) return []
 
@@ -78,16 +84,23 @@ export function pickChartZones(
     .sort((a, b) => b.strength - a.strength)
     .slice(0, MAX_PER_SIDE)
 
-  const toZone = (level: KeyLevel): PriceZoneDef => ({
-    priceLow: level.price - halfBand,
-    priceHigh: level.price + halfBand,
-    timeFrom,
-    timeTo,
-    side: level.side,
-    label: level.side === 'support' ? 'SUPPORT LEVEL' : 'RESISTANCE LEVEL',
-    subtitle: level.sources[0],
-    strength: level.strength,
-  })
+  const toZone = (level: KeyLevel): PriceZoneDef => {
+    const priceLow = level.price - halfBand
+    const priceHigh = level.price + halfBand
+    return {
+      priceLow,
+      priceHigh,
+      timeFrom,
+      timeTo,
+      side: level.side,
+      label: level.side === 'support' ? 'SUPPORT LEVEL' : 'RESISTANCE LEVEL',
+      subtitle: level.sources[0],
+      strength: level.strength,
+      obstacleNotional: book
+        ? restingNotionalInBand(book, priceLow, priceHigh, level.side)
+        : undefined,
+    }
+  }
 
   const supportZones = mergeOverlappingZones(supports.map(toZone), halfBand)
   const resistanceZones = mergeOverlappingZones(resistances.map(toZone), halfBand)

@@ -132,6 +132,23 @@ export function imbalance(book: ParsedBook, windowPct: number): ImbalanceResult 
   return { bidNotional, askNotional, total, skew, ratio }
 }
 
+/** Resting order-book notional (USDT) between two prices on one side of the book. */
+export function restingNotionalInBand(
+  book: ParsedBook,
+  priceLow: number,
+  priceHigh: number,
+  side: 'support' | 'resistance',
+): number {
+  const lo = Math.min(priceLow, priceHigh)
+  const hi = Math.max(priceLow, priceHigh)
+  const levels = side === 'support' ? book.bids : book.asks
+  let sum = 0
+  for (const l of levels) {
+    if (l.price >= lo && l.price <= hi) sum += l.price * l.qty
+  }
+  return sum
+}
+
 /** Compress a parsed book to the nearest N levels per side for storage. */
 export function compressForHistory(book: ParsedBook, perSide = 150): {
   bids: [number, number][]

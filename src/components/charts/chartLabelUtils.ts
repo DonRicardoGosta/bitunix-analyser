@@ -1,5 +1,6 @@
 import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts'
 import type { PriceZoneDef } from './chartTypes'
+import { fmtCompact } from '../../lib/format'
 
 /**
  * Decimal precision for the price axis, adapted to the coin's magnitude so that
@@ -143,6 +144,17 @@ export function formatStrengthScore(strength: number): string {
   const score = strength * 10
   const text = Number.isInteger(score) ? String(score) : score.toFixed(1)
   return `${text}/10`
+}
+
+/** Zone label subtitle: source · strength · resting USDT obstacle. */
+export function formatZoneSubtitle(zone: PriceZoneDef): string {
+  const score = formatStrengthScore(zone.strength)
+  const notional =
+    zone.obstacleNotional !== undefined && zone.obstacleNotional > 0
+      ? `$${fmtCompact(zone.obstacleNotional)}`
+      : null
+  const parts = [zone.subtitle, score, notional].filter(Boolean)
+  return parts.join(' · ')
 }
 
 /** Map chart-visible strength (≥0.55) to fill/border rgba alphas. */
@@ -293,9 +305,8 @@ export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement
   const title = document.createElement('div')
   title.textContent = zone.label
   labelEl.appendChild(title)
-  const score = formatStrengthScore(zone.strength)
   const sub = document.createElement('div')
-  sub.textContent = zone.subtitle ? `${zone.subtitle} · ${score}` : score
+  sub.textContent = formatZoneSubtitle(zone)
   sub.style.cssText = `
     margin-top: 1px;
     font: 500 9px Inter, sans-serif;
