@@ -9,6 +9,7 @@ import {
 import type {
   AccountRaw,
   BitunixEnvelope,
+  CancelTpslOrderParams,
   DepthRaw,
   FundingRateRaw,
   HistoryPositionPage,
@@ -20,6 +21,7 @@ import type {
   OrderResult,
   PendingPositionRaw,
   PlaceOrderParams,
+  PlaceTpslOrderParams,
   PositionTpslParams,
   TickerRaw,
   TpslOrderRaw,
@@ -274,6 +276,16 @@ export function modifyTpslOrder(params: ModifyTpslOrderParams): Promise<{ orderI
  */
 export function placePositionTpsl(params: PositionTpslParams): Promise<{ orderId: string }> {
   return privatePost<{ orderId: string }>('/api/v1/futures/tpsl/position/place_order', { ...params })
+}
+
+/** Place a new TP/SL trigger order (supports partial qty per level). */
+export function placeTpslOrder(params: PlaceTpslOrderParams): Promise<{ orderId: string }> {
+  return privatePost<{ orderId: string }>('/api/v1/futures/tpsl/place_order', { ...params })
+}
+
+/** Cancel a pending TP/SL trigger order. */
+export function cancelTpslOrder(params: CancelTpslOrderParams): Promise<{ orderId: string }> {
+  return privatePost<{ orderId: string }>('/api/v1/futures/tpsl/cancel_order', { ...params })
 }
 
 /** Close an open position at market by its position id. */

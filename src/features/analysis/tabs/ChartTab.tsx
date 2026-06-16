@@ -5,14 +5,14 @@ import { useTickers } from '../../../store/tickers'
 import { useCandles } from '../useCandles'
 import { useOrderBook } from '../useOrderBook'
 import { usePendingPositions, usePositionTpsl } from '../../stats/useStats'
-import { buildTpslMap, positionOutcome } from '../../stats/positions'
+import { buildPositionChartLines } from '../../stats/positionChart'
 import { computeKeyLevels } from '../setup/engine'
 import { pickChartZones } from '../chartLevels'
 import { CandlesChart, type OverlayToggles } from '../../../components/charts/CandlesChart'
-import type { PriceLineDef } from '../../../components/charts/SetupChart'
+import type { PriceLineDef } from '../../../components/charts/chartTypes'
+import { ChartPositionsPanel } from './ChartPositionsPanel'
 import { RsiPanel, MacdPanel, StochRsiPanel } from '../IndicatorPanels'
 import { Panel, Spinner, ErrorNote } from '../../../components/ui/primitives'
-import { toNum } from '../../../lib/format'
 import { atr } from '../../../lib/indicators'
 import type { Candle } from '../../../lib/candles'
 
@@ -56,7 +56,6 @@ export function ChartTab() {
   const pending = usePendingPositions()
   const tpsl = usePositionTpsl()
   const tickers = useTickers((s) => s.map)
-  const tpslMap = useMemo(() => buildTpslMap(tpsl.data), [tpsl.data])
 
   const mine = useMemo(
     () => (pending.data ?? []).filter((p) => p.symbol === symbol),
@@ -74,20 +73,8 @@ export function ChartTab() {
 
   const positionLines = useMemo<PriceLineDef[]>(() => {
     if (!showPositions || mine.length === 0) return []
-    const mark = lastPrice
-    const out: PriceLineDef[] = []
-    mine.forEach((p, i) => {
-      const o = positionOutcome(p, tpslMap[p.positionId], mark)
-      const tag = mine.length > 1 ? `${o.isLong ? 'L' : 'S'}${i + 1}` : o.isLong ? 'LONG' : 'SHORT'
-      const entry = toNum(p.avgOpenPrice)
-      const liq = toNum(p.liqPrice)
-      out.push({ price: entry, color: o.isLong ? '#22c55e' : '#ef4444', title: `${tag} entry`, width: 2 })
-      if (o.tpPrice !== null) out.push({ price: o.tpPrice, color: '#22d3ee', title: `${tag} TP`, dashed: true })
-      if (o.slPrice !== null) out.push({ price: o.slPrice, color: '#f43f5e', title: `${tag} SL`, dashed: true })
-      if (liq > 0) out.push({ price: liq, color: '#f59e0b', title: `${tag} Liq`, dashed: true })
-    })
-    return out
-  }, [showPositions, mine, tpslMap, lastPrice])
+    return buildPositionChartLines(mine, tpsl.data)
+  }, [showPositions, mine, tpsl.data])
 
   return (
     <div className="flex flex-col gap-4">
@@ -153,6 +140,10 @@ export function ChartTab() {
           />
         </div>
       </Panel>
+
+      {mine.length > 0 && (
+        <ChartPositionsPanel positions={mine} tpslOrders={tpsl.data} />
+      )}
 
       <div className="flex flex-wrap items-center gap-1">
         {(
