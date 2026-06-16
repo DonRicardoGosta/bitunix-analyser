@@ -94,7 +94,7 @@ function updateJob(id: string, patch: Partial<BuilderTriggerJob>): void {
 }
 
 function pruneOldJobs(): void {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000
+  const cutoff = Date.now() - 30 * 60 * 1000
   writeJobs(
     readJobs().filter(
       (j) =>
@@ -104,6 +104,22 @@ function pruneOldJobs(): void {
         (j.status === 'failed' && j.createdAt > cutoff),
     ),
   )
+}
+
+/** Drop finished (done/failed) trigger jobs, optionally only for one symbol. */
+export function clearFinishedBuilderTriggerJobs(symbol?: string): void {
+  writeJobs(
+    readJobs().filter((j) => {
+      const finished = j.status === 'done' || j.status === 'failed'
+      if (!finished) return true
+      return symbol !== undefined && j.symbol !== symbol
+    }),
+  )
+}
+
+/** Force-prune finished jobs immediately (used on app load to clear stale state). */
+export function pruneFinishedBuilderTriggerJobs(): void {
+  pruneOldJobs()
 }
 
 async function fireTriggerJob(job: BuilderTriggerJob, hedge: boolean): Promise<string | undefined> {

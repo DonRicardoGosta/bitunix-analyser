@@ -5,11 +5,13 @@ import {
   ensureBuilderShedPolling,
   getActiveBuilderShedJobs,
   getBuilderShedJobs,
+  pruneFinishedBuilderShedJobs,
 } from './builderShed'
 import {
   ensureBuilderTriggerPolling,
   getActiveBuilderTriggerJobs,
   getBuilderTriggerJobs,
+  pruneFinishedBuilderTriggerJobs,
 } from './builderTrigger'
 
 /** Polls builder shed jobs and momentum trigger entries (app-wide). */
@@ -26,6 +28,10 @@ export function useBuilderShedWatcher(symbol?: string): {
 
   useEffect(() => {
     if (!hasKeys || !live) return
+    // Clear stale finished jobs once on mount so old failure notices don't linger.
+    pruneFinishedBuilderShedJobs()
+    pruneFinishedBuilderTriggerJobs()
+    bump((n) => n + 1)
     const onTick = () => {
       bump((n) => n + 1)
       queryClient.invalidateQueries({ queryKey: ['pendingPositions'] })

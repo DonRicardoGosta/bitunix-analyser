@@ -60,6 +60,17 @@ export function clearBuilderShedForSymbol(symbol: string): void {
   writeJobs(readJobs().filter((j) => j.symbol !== symbol || j.status === 'done'))
 }
 
+/** Drop finished (done/failed) shed jobs, optionally only for one symbol. */
+export function clearFinishedBuilderShedJobs(symbol?: string): void {
+  writeJobs(
+    readJobs().filter((j) => {
+      const finished = j.status === 'done' || j.status === 'failed'
+      if (!finished) return true
+      return symbol !== undefined && j.symbol !== symbol
+    }),
+  )
+}
+
 export function registerBuilderShedJobs(inputs: BuilderShedJobInput[]): void {
   if (!inputs.length) return
   const now = Date.now()
@@ -81,16 +92,24 @@ function updateJob(id: string, patch: Partial<BuilderShedJob>): void {
 }
 
 function pruneOldJobs(): void {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000
+  // Active jobs persist; finished ones are kept only briefly so stale notices
+  // (e.g. "auto-shed failed on N rungs") don't linger across builds/sessions.
+  const doneCutoff = Date.now() - 30 * 60 * 1000
+  const failedCutoff = Date.now() - 30 * 60 * 1000
   writeJobs(
     readJobs().filter(
       (j) =>
         j.status === 'pending' ||
         j.status === 'shedding' ||
-        (j.status === 'done' && j.createdAt > cutoff) ||
-        (j.status === 'failed' && j.createdAt > cutoff),
+        (j.status === 'done' && j.createdAt > doneCutoff) ||
+        (j.status === 'failed' && j.createdAt > failedCutoff),
     ),
   )
+}
+
+/** Force-prune finished jobs immediately (used on app load to clear stale state). */
+export function pruneFinishedBuilderShedJobs(): void {
+  pruneOldJobs()
 }
 
 function normalizePositionSide(side: PendingPositionRaw['side']): 'LONG' | 'SHORT' | null {

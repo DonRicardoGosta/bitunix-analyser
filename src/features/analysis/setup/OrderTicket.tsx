@@ -13,12 +13,18 @@ import {
   type BuilderRungSizing,
   type TpMode,
 } from './order'
-import { registerBuilderShedJobs, ensureBuilderShedPolling, type BuilderShedJobInput } from './builderShed'
+import {
+  registerBuilderShedJobs,
+  ensureBuilderShedPolling,
+  clearFinishedBuilderShedJobs,
+  type BuilderShedJobInput,
+} from './builderShed'
 import {
   registerBuilderTriggerJobs,
   ensureBuilderTriggerPolling,
   processBuilderTriggerJobs,
   getActiveBuilderTriggerJobs,
+  clearFinishedBuilderTriggerJobs,
 } from './builderTrigger'
 import { builderLimitCanRest, builderUsesTriggerEntry } from './builderOrders'
 import { fetchLivePrice } from './builderMarket'
@@ -452,6 +458,10 @@ export function OrderTicket({
     let skippedCross = 0
     let refPrice = currentPrice > 0 ? currentPrice : builder.avgEntry
     const useTriggers = builderUsesTriggerEntry(builder.entryStyle)
+    // Clear stale finished jobs for this symbol so old notices (e.g. "auto-shed
+    // failed on N rungs" from previous broken builds) don't carry over.
+    clearFinishedBuilderShedJobs(symbol)
+    clearFinishedBuilderTriggerJobs(symbol)
     try {
       setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
       let hedge = positionMode === 'HEDGE'
