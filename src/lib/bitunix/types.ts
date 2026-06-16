@@ -97,6 +97,36 @@ export interface OrderResult {
   clientId?: string
 }
 
+// ---- Internal web API: trigger / stop-limit order ----
+
+/** side: 2 = BUY/LONG, 1 = SELL/SHORT. orderUnit: 1 = base coin quantity. */
+export type WebOrderSide = 1 | 2
+
+export interface StopLimitOrderParams {
+  symbol: string
+  /** 2 = BUY/LONG, 1 = SELL/SHORT. */
+  side: WebOrderSide
+  /** Limit price placed once the trigger fires. */
+  price: string
+  /** Trigger price that activates the order. */
+  stopPrice: string
+  /** Order size, in the unit given by orderUnit. */
+  amount: string
+  /** UI-mirrored amount (same value as `amount`). */
+  frontAmount: string
+  /** 1 = GTC. */
+  effectType: number
+  /** 1 = base coin quantity. */
+  orderUnit: number
+  reductionOnly: boolean
+  usePercentage: boolean
+}
+
+export interface StopLimitResult {
+  orderId?: string
+  id?: string
+}
+
 /** Resting or historical futures order (trade/get_*_orders). */
 export interface OrderRaw {
   orderId: string

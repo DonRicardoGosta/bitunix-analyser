@@ -9,6 +9,10 @@ export function SettingsPage() {
   const { apiKey, secretKey, marginCoin, setCredentials, clear } = useCredentials()
   const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
   const setLiveTradingEnabled = useCredentials((s) => s.setLiveTradingEnabled)
+  const webToken = useCredentials((s) => s.webToken)
+  const webUserId = useCredentials((s) => s.webUserId)
+  const webOneId = useCredentials((s) => s.webOneId)
+  const setWebSession = useCredentials((s) => s.setWebSession)
   const [localKey, setLocalKey] = useState(apiKey)
   const [localSecret, setLocalSecret] = useState(secretKey)
   const [localCoin, setLocalCoin] = useState(marginCoin || 'USDT')
@@ -16,6 +20,29 @@ export function SettingsPage() {
   const [status, setStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle')
   const [message, setMessage] = useState<string>('')
   const [account, setAccount] = useState<AccountRaw | null>(null)
+
+  const [localToken, setLocalToken] = useState(webToken)
+  const [localUserId, setLocalUserId] = useState(webUserId)
+  const [localOneId, setLocalOneId] = useState(webOneId)
+  const [showToken, setShowToken] = useState(false)
+  const [webMessage, setWebMessage] = useState<string>('')
+
+  function saveWebSession() {
+    setWebSession({
+      webToken: localToken.trim(),
+      webUserId: localUserId.trim(),
+      webOneId: localOneId.trim(),
+    })
+    setWebMessage('Web session saved to this browser (localStorage).')
+  }
+
+  function clearWebSession() {
+    setWebSession({ webToken: '', webUserId: '', webOneId: '' })
+    setLocalToken('')
+    setLocalUserId('')
+    setLocalOneId('')
+    setWebMessage('Web session cleared.')
+  }
 
   function save() {
     setCredentials({ apiKey: localKey.trim(), secretKey: localSecret.trim(), marginCoin: localCoin.trim() || 'USDT' })
@@ -138,6 +165,98 @@ export function SettingsPage() {
               <Mini label="Mode" value={account.positionMode} />
             </div>
           )}
+        </div>
+      </Panel>
+
+      <Panel
+        title="Bitunix web session (trigger orders)"
+        subtitle="Required only for Position Builder momentum trigger orders"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-zinc-400">
+            Bitunix trigger (stop) orders use an internal web endpoint that the API key cannot sign.
+            Paste your logged-in web session token so the app can place real trigger orders on the
+            exchange. This token is short-lived — re-paste it when trigger orders start failing.
+          </p>
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3 text-xs text-zinc-500">
+            <p className="mb-1 font-medium text-zinc-400">How to copy it</p>
+            <ol className="list-decimal space-y-0.5 pl-4">
+              <li>
+                Log in at <code className="text-zinc-300">bitunix.com</code> and open the futures
+                trade page.
+              </li>
+              <li>Open DevTools (F12) → Network tab, place or open any order panel.</li>
+              <li>
+                Click a request to <code className="text-zinc-300">api.bitunix.com</code> and copy the
+                request headers <code className="text-zinc-300">token</code>,{' '}
+                <code className="text-zinc-300">userid</code> and{' '}
+                <code className="text-zinc-300">one-id</code>.
+              </li>
+            </ol>
+          </div>
+
+          <Field label="Web token (token / exchange-token)">
+            <div className="flex gap-2">
+              <input
+                value={localToken}
+                onChange={(e) => setLocalToken(e.target.value)}
+                placeholder="AZ35on4O...HUBQ"
+                type={showToken ? 'text' : 'password'}
+                spellCheck={false}
+                autoComplete="off"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
+              />
+              <button
+                onClick={() => setShowToken((v) => !v)}
+                className="rounded-lg border border-zinc-700 px-3 text-xs text-zinc-300 hover:bg-zinc-800"
+              >
+                {showToken ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </Field>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="User ID (userid)">
+              <input
+                value={localUserId}
+                onChange={(e) => setLocalUserId(e.target.value)}
+                placeholder="351268174"
+                spellCheck={false}
+                autoComplete="off"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
+              />
+            </Field>
+            <Field label="One ID (one-id)">
+              <input
+                value={localOneId}
+                onChange={(e) => setLocalOneId(e.target.value)}
+                placeholder="2039651636085039105"
+                spellCheck={false}
+                autoComplete="off"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-cyan-500"
+              />
+            </Field>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={saveWebSession}
+              className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-cyan-400"
+            >
+              Save web session
+            </button>
+            <button
+              onClick={clearWebSession}
+              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-rose-300 hover:bg-rose-500/10"
+            >
+              Clear
+            </button>
+            <Badge tone={webToken ? 'up' : 'neutral'}>
+              {webToken ? 'Web session set' : 'Not set'}
+            </Badge>
+          </div>
+
+          {webMessage && <p className="text-sm text-zinc-400">{webMessage}</p>}
         </div>
       </Panel>
 

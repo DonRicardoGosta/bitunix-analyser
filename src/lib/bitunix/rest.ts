@@ -1,4 +1,4 @@
-import { getCredentials } from '../../store/credentials'
+import { getCredentials, getWebSession } from '../../store/credentials'
 import {
   buildQueryParamsString,
   buildQueryString,
@@ -24,6 +24,8 @@ import type {
   PlaceOrderParams,
   PlaceTpslOrderParams,
   PositionTpslParams,
+  StopLimitOrderParams,
+  StopLimitResult,
   TickerRaw,
   TpslOrderRaw,
   TradingPairRaw,
@@ -32,6 +34,10 @@ import type {
 // All REST traffic goes through the reverse proxy (nginx in prod, Vite in dev),
 // which strips this prefix and forwards to https://fapi.bitunix.com.
 const BASE = '/bitunix'
+
+// Internal Bitunix web API (trigger/stop orders), proxied to api.bitunix.com.
+// Authenticated by a web session token rather than the API key signature.
+const WEB_BASE = '/bitunix-web'
 
 export class BitunixError extends Error {
   code: number
@@ -126,6 +132,51 @@ export async function privatePost<T>(path: string, body: Record<string, unknown>
     body: bodyStr,
   })
   return parseEnvelope<T>(res)
+}
+
+/**
+ * POST to the internal Bitunix web API. Uses the stored web session token
+ * headers instead of the API-key HMAC signature. Static web headers (origin,
+ * referer, client-type, etc.) are injected by the reverse proxy.
+ */
+export async function webPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const { webToken, webUserId, webOneId } = getWebSession()
+  if (!webToken) {
+    throw new BitunixError(-1, 'Bitunix web session token not set — add it in Settings.')
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    accept: 'application/json',
+    token: webToken,
+    'exchange-token': webToken,
+  }
+  if (webUserId) headers['userid'] = webUserId
+  if (webOneId) headers['one-id'] = webOneId
+
+  const res = await fetch(`${WEB_BASE}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    throw new BitunixError(res.status, `HTTP ${res.status} ${res.statusText}`)
+  }
+  const json = (await res.json()) as { code?: number | string; msg?: string; data?: T }
+  const code = json.code
+  const ok = code === 0 || code === '0' || code === '00000' || code === undefined
+  if (!ok) {
+    throw new BitunixError(Number(code) || -1, json.msg || 'web request failed')
+  }
+  return json.data as T
+}
+
+/**
+ * Place a native Bitunix trigger (stop-limit) order via the internal web API.
+ * When the market reaches `stopPrice`, a limit order at `price` is placed.
+ */
+export function placeStopLimitOrder(params: StopLimitOrderParams): Promise<StopLimitResult> {
+  return webPost<StopLimitResult>('/futures/futures/stop/limit', { ...params })
 }
 
 // ---- Public market data ----

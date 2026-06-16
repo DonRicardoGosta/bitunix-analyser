@@ -19,13 +19,12 @@ import {
   clearFinishedBuilderShedJobs,
   type BuilderShedJobInput,
 } from './builderShed'
+import { submitMomentumTriggers, type MomentumTriggerRung } from './builderTrigger'
 import {
-  registerBuilderTriggerJobs,
-  ensureBuilderTriggerPolling,
-  processBuilderTriggerJobs,
-  getActiveBuilderTriggerJobs,
-  clearFinishedBuilderTriggerJobs,
-} from './builderTrigger'
+  registerBuilderTpslJob,
+  ensureBuilderTpslPolling,
+  clearFinishedBuilderTpslJobs,
+} from './builderTpsl'
 import { builderLimitCanRest, builderUsesTriggerEntry } from './builderOrders'
 import { fetchLivePrice } from './builderMarket'
 import { useBuilderShedWatcher } from './useBuilderShedWatcher'
@@ -96,7 +95,8 @@ export function OrderTicket({
   const marginCoin = useCredentials((s) => s.marginCoin)
   const hasKeys = useCredentials((s) => s.hasKeys())
   const liveTradingEnabled = useCredentials((s) => s.liveTradingEnabled)
-  const { activeCount: shedActiveCount, failedCount: shedFailedCount, triggerCount, triggerFailedCount } =
+  const hasWebSession = useCredentials((s) => s.hasWebSession())
+  const { activeCount: shedActiveCount, failedCount: shedFailedCount, tpslPendingCount, tpslFailedCount } =
     useBuilderShedWatcher(symbol)
 
   // Persisted ticket settings (remembered across navigation/reloads).
@@ -299,21 +299,25 @@ export function OrderTicket({
     return out
   }, [isBuilder, builderBudget, builderRungSizings, builderNetQty, builderNetMargin, availableBalance])
 
+  const builderUsesTriggers = isBuilder && builderUsesTriggerEntry(builder.entryStyle)
+
   const builderNotices = useMemo<string[]>(() => {
     if (!isBuilder) return []
     const out: string[] = []
     if (builderUsesTriggerEntry(builder.entryStyle)) {
       out.push(
-        'Momentum uses trigger entries: a market open fires when price reaches each rung (monitored while the app is open). Resting limits appear on Bitunix after each trigger.',
+        'Momentum places native Bitunix trigger (stop) orders: each rung rests on the exchange and fires a limit when price reaches it — no app needs to stay open. The shared TP/SL is attached once a rung fills.',
       )
-    }
-    if (builderUsesTrick) {
+      if (!hasWebSession) {
+        out.push('Trigger orders need your Bitunix web session token — add it in Settings to enable momentum builds.')
+      }
+    } else if (builderUsesTrick) {
       out.push(
         'Some rungs are below the exchange minimum: each opens at the exchange minimum plus your target, then auto-sheds the excess via a market close when the limit fills (hedge mode requires positionId — shed orders cannot be pre-placed).',
       )
     }
     return out
-  }, [isBuilder, builder.entryStyle, builderUsesTrick])
+  }, [isBuilder, builder.entryStyle, builderUsesTrick, hasWebSession])
 
   const presets = LEVERAGE_PRESETS.filter((p) => p >= spec.minLeverage && p <= spec.maxLeverage)
   const canSubmit =
@@ -330,7 +334,12 @@ export function OrderTicket({
     straddleWarnings.length === 0 &&
     submit.kind !== 'submitting'
   const canSubmitBuilder =
-    hasKeys && liveTradingEnabled && builderNetQty > 0 && builderWarnings.length === 0 && submit.kind !== 'submitting'
+    hasKeys &&
+    liveTradingEnabled &&
+    builderNetQty > 0 &&
+    builderWarnings.length === 0 &&
+    submit.kind !== 'submitting' &&
+    (!builderUsesTriggers || hasWebSession)
 
   async function doSubmit() {
     setShowConfirm(false)
@@ -447,21 +456,89 @@ export function OrderTicket({
     }
   }
 
-  // Pullback: resting POST_ONLY limits. Momentum: trigger entries (market open when price hits each rung).
+  // Pullback: resting POST_ONLY limits via the API key. Momentum: native Bitunix
+  // trigger (stop-limit) orders via the web session token — they rest on the
+  // exchange and fire when price reaches each rung; the shared TP/SL is attached
+  // once a rung fills.
   async function doSubmitBuilder() {
     setShowConfirm(false)
     const active = builderRungSizings.filter((r) => r.openQty > 0)
     if (active.length === 0) return
+    const useTriggers = builderUsesTriggerEntry(builder.entryStyle)
+    const tp = String(roundToPrecision(builder.tp, spec.quotePrecision))
+    const sl = String(roundToPrecision(builder.stop, spec.quotePrecision))
+
+    if (useTriggers) {
+      await submitMomentumBuilder(active, tp, sl)
+      return
+    }
+    await submitPullbackBuilder(active, tp, sl)
+  }
+
+  // Momentum: place a native stop-limit trigger per rung, then attach the
+  // shared position TP/SL once a rung fills. Sizing sends max(target, min) coin
+  // so sub-minimum rungs are accepted without the open+shed trick.
+  async function submitMomentumBuilder(active: BuilderRungSizing[], tp: string, sl: string) {
+    if (!hasWebSession) {
+      setSubmit({
+        kind: 'error',
+        message: 'Bitunix web session token not set — add it in Settings to place trigger orders.',
+        orderIds: [],
+      })
+      return
+    }
+    clearFinishedBuilderTpslJobs(symbol)
+    try {
+      setSubmit({ kind: 'submitting', step: 'Setting leverage…' })
+      await changeLeverage(symbol, leverage, marginCoin)
+
+      const rungs: MomentumTriggerRung[] = active.map((r) => ({
+        triggerPrice: roundToPrecision(r.price, spec.quotePrecision),
+        amount: Math.max(r.targetQty, spec.minTradeVolume),
+      }))
+
+      setSubmit({ kind: 'submitting', step: `Placing ${rungs.length} trigger order${rungs.length === 1 ? '' : 's'}…` })
+      const res = await submitMomentumTriggers({
+        symbol,
+        side: builder.side,
+        rungs,
+        basePrecision: spec.basePrecision,
+        quotePrecision: spec.quotePrecision,
+      })
+
+      if (res.placed > 0) {
+        // Attach the shared TP/SL to the position as soon as a rung fills.
+        registerBuilderTpslJob({ symbol, side: builder.side, tp, sl })
+        ensureBuilderTpslPolling()
+      }
+
+      if (res.placed === 0) {
+        throw new Error(res.errors[0] || 'No trigger orders could be placed.')
+      }
+
+      const notes: string[] = [
+        `${res.placed} trigger order${res.placed === 1 ? '' : 's'} resting on Bitunix — fire when price ${
+          builder.side === 'LONG' ? 'rises to' : 'falls to'
+        } each rung.`,
+        'Shared TP/SL will attach automatically once a rung fills.',
+      ]
+      if (res.failed > 0) {
+        notes.push(`${res.failed} rung${res.failed === 1 ? '' : 's'} failed: ${res.errors[0] ?? 'unknown error'}`)
+      }
+      setSubmit({ kind: 'done', orderIds: res.orderIds, note: notes.join(' ') })
+    } catch (e) {
+      setSubmit({ kind: 'error', message: e instanceof Error ? e.message : String(e), orderIds: [] })
+    }
+  }
+
+  // Pullback: resting POST_ONLY limit orders on the passive side, with the
+  // open+shed trick for sub-minimum rungs.
+  async function submitPullbackBuilder(active: BuilderRungSizing[], tp: string, sl: string) {
     const orderIds: string[] = []
     const shedInputs: BuilderShedJobInput[] = []
-    const triggerInputs: Parameters<typeof registerBuilderTriggerJobs>[1] = []
     let skippedCross = 0
     let refPrice = currentPrice > 0 ? currentPrice : builder.avgEntry
-    const useTriggers = builderUsesTriggerEntry(builder.entryStyle)
-    // Clear stale finished jobs for this symbol so old notices (e.g. "auto-shed
-    // failed on N rungs" from previous broken builds) don't carry over.
     clearFinishedBuilderShedJobs(symbol)
-    clearFinishedBuilderTriggerJobs(symbol)
     try {
       setSubmit({ kind: 'submitting', step: 'Enabling Hedge mode…' })
       let hedge = positionMode === 'HEDGE'
@@ -486,8 +563,6 @@ export function OrderTicket({
       refPrice = (await fetchLivePrice(symbol)) || refPrice
 
       const isLong = builder.side === 'LONG'
-      const tp = String(roundToPrecision(builder.tp, spec.quotePrecision))
-      const sl = String(roundToPrecision(builder.stop, spec.quotePrecision))
       const total = active.length
 
       async function placeOpenRung(r: BuilderRungSizing, i: number, limitPrice: number): Promise<string | undefined> {
@@ -521,27 +596,6 @@ export function OrderTicket({
       for (let i = 0; i < active.length; i++) {
         const r = active[i]
         const limitPrice = roundToPrecision(r.price, spec.quotePrecision)
-
-        if (useTriggers) {
-          triggerInputs.push({
-            symbol,
-            side: builder.side,
-            triggerPrice: limitPrice,
-            openQty: r.openQty,
-            shedQty: r.shedQty,
-            usesTrick: r.usesTrick,
-            rungIndex: i,
-            tp,
-            sl,
-            leverage,
-            marginMode,
-            marginCoin,
-            basePrecision: spec.basePrecision,
-            quotePrecision: spec.quotePrecision,
-          })
-          continue
-        }
-
         const canRest = builderLimitCanRest(builder.side, limitPrice, refPrice)
         if (!canRest) {
           skippedCross++
@@ -566,48 +620,20 @@ export function OrderTicket({
         }
       }
 
-      let firedNow = 0
-      if (triggerInputs.length) {
-        registerBuilderTriggerJobs(symbol, triggerInputs)
-        ensureBuilderTriggerPolling()
-        setSubmit({ kind: 'submitting', step: 'Arming trigger rungs…' })
-        const result = await processBuilderTriggerJobs({ [symbol]: refPrice })
-        firedNow = result.fired
-        orderIds.push(...result.orderIds)
-      }
-
       if (shedInputs.length) {
         registerBuilderShedJobs(shedInputs)
         ensureBuilderShedPolling()
       }
 
       const notes: string[] = []
-      if (useTriggers) {
-        if (firedNow > 0) {
-          notes.push(`${firedNow} trigger rung${firedNow === 1 ? '' : 's'} fired on Bitunix (market entry).`)
-        }
-        const pendingTriggers = getActiveBuilderTriggerJobs(symbol)
-        if (pendingTriggers.length > 0) {
-          const nearest = builder.side === 'LONG'
-            ? Math.min(...pendingTriggers.map((d) => d.triggerPrice))
-            : Math.max(...pendingTriggers.map((d) => d.triggerPrice))
-          notes.push(
-            `${pendingTriggers.length} trigger${pendingTriggers.length === 1 ? '' : 's'} armed — market open when price ${builder.side === 'LONG' ? 'rises to' : 'falls to'} ${fmtPrice(nearest)} (keep app open).`,
-          )
-        } else if (triggerInputs.length > 0 && firedNow === 0) {
-          notes.push(`${triggerInputs.length} trigger rungs armed — waiting for price to reach each level.`)
-        }
-      } else if (orderIds.length > 0) {
+      if (orderIds.length > 0) {
         notes.push(`${orderIds.length} resting limit order${orderIds.length === 1 ? '' : 's'} on Bitunix now.`)
       }
       if (skippedCross > 0) {
         notes.push(`${skippedCross} rung${skippedCross === 1 ? '' : 's'} skipped — already at/past the limit price.`)
       }
-      if (!useTriggers && orderIds.length === 0) {
+      if (orderIds.length === 0) {
         throw new Error('No resting limits could be placed at the current price.')
-      }
-      if (useTriggers && triggerInputs.length === 0) {
-        throw new Error('No trigger rungs could be armed.')
       }
       if (shedInputs.length > 0) {
         notes.push(
@@ -620,15 +646,10 @@ export function OrderTicket({
         registerBuilderShedJobs(shedInputs)
         ensureBuilderShedPolling()
       }
-      if (triggerInputs.length) {
-        registerBuilderTriggerJobs(symbol, triggerInputs)
-        ensureBuilderTriggerPolling()
-        void processBuilderTriggerJobs({ [symbol]: refPrice })
-      }
       const base = e instanceof Error ? e.message : String(e)
       const partial =
-        orderIds.length > 0 || triggerInputs.length > 0
-          ? ` ${orderIds.length} order${orderIds.length === 1 ? '' : 's'} placed${triggerInputs.length ? `; ${triggerInputs.length} trigger${triggerInputs.length === 1 ? '' : 's'} armed` : ''}${shedInputs.length ? `; auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'}` : ''}.`
+        orderIds.length > 0
+          ? ` ${orderIds.length} order${orderIds.length === 1 ? '' : 's'} placed${shedInputs.length ? `; auto-shed queued for ${shedInputs.length} rung${shedInputs.length === 1 ? '' : 's'}` : ''}.`
           : ''
       setSubmit({ kind: 'error', message: `${base}${partial}`, orderIds })
     }
@@ -1095,7 +1116,7 @@ export function OrderTicket({
             {both
               ? ' Both legs are MARKET orders opened at once; the long targets the resistance and the short targets the support.'
               : isBuilder
-                ? ' Pullback: POST_ONLY limits on the book. Momentum: trigger entries — market open when price hits each rung (monitored while the app is open).'
+                ? ' Pullback: POST_ONLY limits on the book. Momentum: native Bitunix trigger (stop) orders that rest on the exchange and fire when price hits each rung.'
                 : ' For multiple same-direction positions per pair, enable '}
             {isSingle && <span className="text-zinc-300">Multi-Trade</span>}
             {isSingle && " once in the Bitunix app — it isn't available through the API."}
@@ -1103,14 +1124,14 @@ export function OrderTicket({
 
           {isSingle && <EntryQualityCard quality={entryQuality} side={side} />}
 
-          {isBuilder && triggerCount > 0 && (
+          {isBuilder && tpslPendingCount > 0 && (
             <p className="rounded-md bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
-              {triggerCount} momentum trigger{triggerCount === 1 ? '' : 's'} armed — market entry when price hits each rung.
+              Waiting for a trigger rung to fill, then attaching the shared TP/SL automatically.
             </p>
           )}
-          {isBuilder && triggerFailedCount > 0 && (
+          {isBuilder && tpslFailedCount > 0 && (
             <p className="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300">
-              Trigger entry failed on {triggerFailedCount} rung{triggerFailedCount === 1 ? '' : 's'} — retry or place manually.
+              Could not attach the shared TP/SL automatically — set it on the position manually if needed.
             </p>
           )}
           {isBuilder && shedActiveCount > 0 && (

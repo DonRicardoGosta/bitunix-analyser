@@ -8,18 +8,22 @@ import {
   pruneFinishedBuilderShedJobs,
 } from './builderShed'
 import {
-  ensureBuilderTriggerPolling,
-  getActiveBuilderTriggerJobs,
-  getBuilderTriggerJobs,
-  pruneFinishedBuilderTriggerJobs,
-} from './builderTrigger'
+  ensureBuilderTpslPolling,
+  getActiveBuilderTpslJobs,
+  getBuilderTpslJobs,
+  pruneFinishedBuilderTpslJobs,
+} from './builderTpsl'
 
-/** Polls builder shed jobs and momentum trigger entries (app-wide). */
+/**
+ * Polls builder background jobs (app-wide):
+ *  - shed jobs: close the open+shed excess once a pullback limit fills.
+ *  - tpsl jobs: attach the shared position TP/SL once a momentum trigger fills.
+ */
 export function useBuilderShedWatcher(symbol?: string): {
   activeCount: number
   failedCount: number
-  triggerCount: number
-  triggerFailedCount: number
+  tpslPendingCount: number
+  tpslFailedCount: number
 } {
   const hasKeys = useCredentials((s) => s.hasKeys())
   const live = useCredentials((s) => s.liveTradingEnabled)
@@ -30,7 +34,7 @@ export function useBuilderShedWatcher(symbol?: string): {
     if (!hasKeys || !live) return
     // Clear stale finished jobs once on mount so old failure notices don't linger.
     pruneFinishedBuilderShedJobs()
-    pruneFinishedBuilderTriggerJobs()
+    pruneFinishedBuilderTpslJobs()
     bump((n) => n + 1)
     const onTick = () => {
       bump((n) => n + 1)
@@ -39,19 +43,19 @@ export function useBuilderShedWatcher(symbol?: string): {
       queryClient.invalidateQueries({ queryKey: ['pendingOrders'] })
     }
     const stopShed = ensureBuilderShedPolling(onTick)
-    const stopTrigger = ensureBuilderTriggerPolling(onTick)
+    const stopTpsl = ensureBuilderTpslPolling(onTick)
     return () => {
       stopShed()
-      stopTrigger()
+      stopTpsl()
     }
   }, [hasKeys, live, queryClient])
 
   const jobs = getBuilderShedJobs().filter((j) => !symbol || j.symbol === symbol)
-  const triggers = getBuilderTriggerJobs().filter((j) => !symbol || j.symbol === symbol)
+  const tpslJobs = getBuilderTpslJobs().filter((j) => !symbol || j.symbol === symbol)
   return {
     activeCount: getActiveBuilderShedJobs(symbol).length,
     failedCount: jobs.filter((j) => j.status === 'failed').length,
-    triggerCount: getActiveBuilderTriggerJobs(symbol).length,
-    triggerFailedCount: triggers.filter((j) => j.status === 'failed').length,
+    tpslPendingCount: getActiveBuilderTpslJobs(symbol).length,
+    tpslFailedCount: tpslJobs.filter((j) => j.status === 'failed').length,
   }
 }
