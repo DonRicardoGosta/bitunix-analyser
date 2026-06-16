@@ -30,6 +30,7 @@ export type { BacktestStats } from './backtest'
 export type { RangeBacktestStats } from './rangeBacktest'
 export type { RangeStraddlePlan, RangeStraddleLeg } from './straddle'
 export type { PositionBuilderPlan, BuilderRung } from './builder'
+export { buildPositionBuilder, suggestBuildSide } from './builder'
 export type { DetectedPattern, PatternId, PatternDirection } from './patterns'
 export type {
   ReversalRisk,
