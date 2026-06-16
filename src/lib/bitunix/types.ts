@@ -120,6 +120,27 @@ export interface PositionTpslParams {
   slStopType?: 'MARK_PRICE' | 'LAST_PRICE'
 }
 
+/** Place a new TP/SL trigger order with optional partial qty. */
+export interface PlaceTpslOrderParams {
+  symbol: string
+  positionId: string
+  tpPrice?: string
+  tpStopType?: 'MARK_PRICE' | 'LAST_PRICE'
+  tpOrderType?: OrderType
+  tpOrderPrice?: string
+  slPrice?: string
+  slStopType?: 'MARK_PRICE' | 'LAST_PRICE'
+  slOrderType?: OrderType
+  slOrderPrice?: string
+  tpQty?: string
+  slQty?: string
+}
+
+export interface CancelTpslOrderParams {
+  symbol: string
+  orderId: string
+}
+
 export interface LeverageMarginMode {
   symbol: string
   marginCoin: string
