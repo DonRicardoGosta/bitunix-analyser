@@ -25,14 +25,27 @@ export function pickChartZones(
 
   const halfBand = Math.max(atr * 0.15, price * 0.0015)
   const { timeFrom, timeTo } = zoneTimeRange(candles)
+  const maxDist = Math.max(price * 0.12, atr * 4)
 
   const supports = levels
-    .filter((l) => l.side === 'support' && l.price < price && l.strength >= MIN_STRENGTH)
+    .filter(
+      (l) =>
+        l.side === 'support' &&
+        l.price < price &&
+        l.strength >= MIN_STRENGTH &&
+        price - l.price <= maxDist,
+    )
     .sort((a, b) => b.strength - a.strength)
     .slice(0, MAX_PER_SIDE)
 
   const resistances = levels
-    .filter((l) => l.side === 'resistance' && l.price > price && l.strength >= MIN_STRENGTH)
+    .filter(
+      (l) =>
+        l.side === 'resistance' &&
+        l.price > price &&
+        l.strength >= MIN_STRENGTH &&
+        l.price - price <= maxDist,
+    )
     .sort((a, b) => b.strength - a.strength)
     .slice(0, MAX_PER_SIDE)
 

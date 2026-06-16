@@ -12,6 +12,7 @@ import {
 } from 'lightweight-charts'
 import type { Candle } from '../../lib/candles'
 import { bollinger, ema, vwap } from '../../lib/indicators'
+import { createVisibleCandleAutoscaleProvider, subscribeVisibleRangeAutoscale } from './chartAutoscale'
 import { applyAdaptivePriceFormat } from './chartLabelUtils'
 import type { PriceLineDef, PriceZoneDef } from './chartTypes'
 import { chartOverlayStyle, chartShellStyle, usePriceLineLabels } from './usePriceLineLabels'
@@ -51,6 +52,11 @@ export function CandlesChart({ candles, overlays, priceLines = [], priceZones = 
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const lineRefs = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
+  const candlesRef = useRef(candles)
+
+  useEffect(() => {
+    candlesRef.current = candles
+  }, [candles])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -68,7 +74,10 @@ export function CandlesChart({ candles, overlays, priceLines = [], priceZones = 
         horzLines: { color: 'rgba(51,65,85,0.18)' },
       },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: '#1f2937' },
+      rightPriceScale: {
+        borderColor: '#1f2937',
+        scaleMargins: { top: 0.08, bottom: 0.12 },
+      },
       timeScale: { borderColor: '#1f2937', timeVisible: true, secondsVisible: false },
     })
     chartRef.current = chart
@@ -79,6 +88,10 @@ export function CandlesChart({ candles, overlays, priceLines = [], priceZones = 
       borderVisible: false,
       wickUpColor: '#22c55e',
       wickDownColor: '#ef4444',
+      autoscaleInfoProvider: createVisibleCandleAutoscaleProvider(
+        () => candlesRef.current,
+        () => chartRef.current,
+      ),
     })
 
     volumeRef.current = chart.addSeries(HistogramSeries, {
@@ -89,7 +102,10 @@ export function CandlesChart({ candles, overlays, priceLines = [], priceZones = 
     })
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } })
 
+    const unsubAutoscale = subscribeVisibleRangeAutoscale(chart)
+
     return () => {
+      unsubAutoscale()
       chart.remove()
       chartRef.current = null
       candleRef.current = null
@@ -173,6 +189,7 @@ export function CandlesChart({ candles, overlays, priceLines = [], priceZones = 
           priceLineVisible: false,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
+          autoscaleInfoProvider: () => null,
         })
         lineRefs.current.set(def.key, series)
       }

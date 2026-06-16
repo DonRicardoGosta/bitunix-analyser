@@ -13,6 +13,7 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts'
 import type { Candle } from '../../lib/candles'
+import { createVisibleCandleAutoscaleProvider, subscribeVisibleRangeAutoscale } from './chartAutoscale'
 import { applyAdaptivePriceFormat } from './chartLabelUtils'
 import type { ChartMarker, PriceLineDef } from './chartTypes'
 import { chartOverlayStyle, chartShellStyle, usePriceLineLabels } from './usePriceLineLabels'
@@ -37,6 +38,11 @@ export function SetupChart({ candles, lines, markers, height = 460, interactive 
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  const candlesRef = useRef(candles)
+
+  useEffect(() => {
+    candlesRef.current = candles
+  }, [candles])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -53,7 +59,10 @@ export function SetupChart({ candles, lines, markers, height = 460, interactive 
         horzLines: { color: 'rgba(51,65,85,0.18)' },
       },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: '#1f2937' },
+      rightPriceScale: {
+        borderColor: '#1f2937',
+        scaleMargins: { top: 0.08, bottom: 0.12 },
+      },
       timeScale: { borderColor: '#1f2937', timeVisible: true, secondsVisible: false },
       ...(interactive
         ? {}
@@ -69,10 +78,17 @@ export function SetupChart({ candles, lines, markers, height = 460, interactive 
       borderVisible: false,
       wickUpColor: '#22c55e',
       wickDownColor: '#ef4444',
+      autoscaleInfoProvider: createVisibleCandleAutoscaleProvider(
+        () => candlesRef.current,
+        () => chartRef.current,
+      ),
     })
     markersRef.current = createSeriesMarkers(candleRef.current, [])
 
+    const unsubAutoscale = interactive ? subscribeVisibleRangeAutoscale(chart) : () => {}
+
     return () => {
+      unsubAutoscale()
       markersRef.current?.detach()
       markersRef.current = null
       chart.remove()
