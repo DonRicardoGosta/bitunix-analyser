@@ -103,18 +103,34 @@ export interface OverlayZoneItem {
   labelEl: HTMLDivElement
 }
 
-const ZONE_STYLES = {
-  support: {
-    fill: 'rgba(34,197,94,0.18)',
-    border: 'rgba(34,197,94,0.65)',
-    text: '#22c55e',
-  },
-  resistance: {
-    fill: 'rgba(239,68,68,0.18)',
-    border: 'rgba(239,68,68,0.65)',
-    text: '#ef4444',
-  },
+const ZONE_RGB = {
+  support: [34, 197, 94] as const,
+  resistance: [239, 68, 68] as const,
 } as const
+
+const ZONE_TEXT = {
+  support: '#22c55e',
+  resistance: '#ef4444',
+} as const
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v))
+}
+
+/** Map chart-visible strength (≥0.55) to fill/border rgba alphas. */
+function zoneStrengthAlphas(
+  strength: number,
+  side: 'support' | 'resistance',
+): { fill: string; border: string } {
+  const [r, g, b] = ZONE_RGB[side]
+  const t = clamp((strength - 0.55) / 0.45, 0, 1)
+  const fillAlpha = 0.12 + t * 0.18
+  const borderAlpha = 0.45 + t * 0.3
+  return {
+    fill: `rgba(${r},${g},${b},${fillAlpha})`,
+    border: `rgba(${r},${g},${b},${borderAlpha})`,
+  }
+}
 
 /** Position HTML overlay S/R zone rectangles and their labels. */
 export function positionPriceZones(
@@ -160,15 +176,15 @@ export function positionPriceZones(
 }
 
 export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement; labelEl: HTMLDivElement } {
-  const style = ZONE_STYLES[zone.side]
+  const { fill, border } = zoneStrengthAlphas(zone.strength, zone.side)
   const rectEl = document.createElement('div')
   Object.assign(rectEl.style, {
     position: 'absolute',
     top: '-9999px',
     left: '0px',
     boxSizing: 'border-box',
-    background: style.fill,
-    border: `1px solid ${style.border}`,
+    background: fill,
+    border: `1px solid ${border}`,
     borderRadius: '2px',
     pointerEvents: 'none',
     zIndex: '10',
@@ -184,24 +200,23 @@ export function createZoneElements(zone: PriceZoneDef): { rectEl: HTMLDivElement
     font: 700 10px Inter, sans-serif;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: ${style.text};
+    color: ${ZONE_TEXT[zone.side]};
     line-height: 1.3;
   `
   const title = document.createElement('div')
   title.textContent = zone.label
   labelEl.appendChild(title)
-  if (zone.subtitle) {
-    const sub = document.createElement('div')
-    sub.textContent = zone.subtitle
-    sub.style.cssText = `
-      margin-top: 1px;
-      font: 500 9px Inter, sans-serif;
-      letter-spacing: normal;
-      text-transform: none;
-      color: rgba(148,163,184,0.9);
-    `
-    labelEl.appendChild(sub)
-  }
+  const pct = `${(zone.strength * 100).toFixed(0)}%`
+  const sub = document.createElement('div')
+  sub.textContent = zone.subtitle ? `${zone.subtitle} · ${pct}` : pct
+  sub.style.cssText = `
+    margin-top: 1px;
+    font: 500 9px Inter, sans-serif;
+    letter-spacing: normal;
+    text-transform: none;
+    color: rgba(148,163,184,0.9);
+  `
+  labelEl.appendChild(sub)
 
   return { rectEl, labelEl }
 }

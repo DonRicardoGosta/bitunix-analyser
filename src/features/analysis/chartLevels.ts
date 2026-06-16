@@ -33,6 +33,7 @@ function mergeOverlappingZones(zones: PriceZoneDef[], halfBand: number): PriceZo
     const current = merged[merged.length - 1]
     if (current && zone.priceLow <= current.priceHigh + gap) {
       current.priceHigh = Math.max(current.priceHigh, zone.priceHigh)
+      current.strength = Math.max(current.strength, zone.strength)
       current.subtitle = mergeSubtitles(current.subtitle, zone.subtitle)
     } else {
       merged.push({ ...zone })
@@ -85,6 +86,7 @@ export function pickChartZones(
     side: level.side,
     label: level.side === 'support' ? 'SUPPORT LEVEL' : 'RESISTANCE LEVEL',
     subtitle: level.sources[0],
+    strength: level.strength,
   })
 
   const supportZones = mergeOverlappingZones(supports.map(toZone), halfBand)

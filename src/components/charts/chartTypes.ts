@@ -25,4 +25,6 @@ export interface PriceZoneDef {
   side: 'support' | 'resistance'
   label: string
   subtitle?: string
+  /** Level strength 0..1 — drives label text and zone opacity. */
+  strength: number
 }
