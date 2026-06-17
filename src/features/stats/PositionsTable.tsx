@@ -7,7 +7,7 @@ import { useCredentials } from '../../store/credentials'
 import { flashClosePosition, modifyTpslOrder, placePositionTpsl } from '../../lib/bitunix/rest'
 import { roundToPrecision } from '../analysis/setup/order'
 import { Badge, EmptyState } from '../../components/ui/primitives'
-import { fmtPrice, fmtSignedUsd, pnlColor, toNum } from '../../lib/format'
+import { fmtPrice, fmtSignedUsd, fmtUsd, pnlColor, toNum } from '../../lib/format'
 import { positionOutcome, type PositionTpsl } from './positions'
 import type { PositionReview } from './review'
 import type { StopSuggestion } from './stopSuggest'
@@ -98,7 +98,7 @@ export function PositionsTable({
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[900px] text-sm">
+      <table className="w-full min-w-[980px] text-sm">
         <thead>
           <tr className="border-b border-zinc-800 text-left text-[11px] uppercase tracking-wide text-zinc-500">
             <th className="px-2 py-2">Symbol</th>
@@ -111,6 +111,7 @@ export function PositionsTable({
             <th className="px-2 py-2 text-right">SL</th>
             <th className="px-2 py-2 text-right">Liq.</th>
             <th className="px-2 py-2 text-right">Lev.</th>
+            <th className="px-2 py-2 text-right">Margin</th>
             <th className="px-2 py-2 text-right">uPnL</th>
             <th className="px-2 py-2 text-right">Action</th>
           </tr>
@@ -120,6 +121,8 @@ export function PositionsTable({
             const mark = tickers[p.symbol]?.last ?? toNum(p.avgOpenPrice)
             const liq = toNum(p.liqPrice)
             const upnl = toNum(p.unrealizedPNL)
+            const margin = toNum(p.margin)
+            const roi = margin > 0 ? (upnl / margin) * 100 : null
             const o = positionOutcome(p, tpslMap[p.positionId], mark)
             const review = reviews?.[p.positionId]
             const suggestion = stopSuggestions?.[p.positionId] ?? null
@@ -163,7 +166,15 @@ export function PositionsTable({
                   {liq > 0 ? fmtPrice(liq) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular text-zinc-400">{p.leverage}x</td>
-                <td className={clsx('px-2 py-2 text-right tabular', pnlColor(upnl))}>{fmtSignedUsd(upnl)}</td>
+                <td className="px-2 py-2 text-right tabular text-zinc-300">{margin > 0 ? fmtUsd(margin) : '—'}</td>
+                <td className={clsx('px-2 py-2 text-right tabular', pnlColor(upnl))}>
+                  {fmtSignedUsd(upnl)}
+                  {roi !== null && (
+                    <span className="ml-1 text-xs opacity-80">
+                      ({roi >= 0 ? '+' : ''}{roi.toFixed(1)}%)
+                    </span>
+                  )}
+                </td>
                 <td className="px-2 py-2 text-right">
                   <div className="flex items-center justify-end gap-1.5">
                     {suggestion && (
@@ -213,7 +224,19 @@ export function PositionsTable({
               <Row label="Size" value={fmtPrice(confirm.qty)} />
               <Row label="Entry" value={fmtPrice(confirm.avgOpenPrice)} />
               <Row label="Mark" value={fmtPrice(tickers[confirm.symbol]?.last ?? toNum(confirm.avgOpenPrice))} />
+              <Row label="Margin" value={toNum(confirm.margin) > 0 ? fmtUsd(toNum(confirm.margin)) : '—'} />
               <Row label="uPnL" value={fmtSignedUsd(toNum(confirm.unrealizedPNL))} />
+              <Row
+                label="ROI"
+                value={
+                  toNum(confirm.margin) > 0
+                    ? `${toNum(confirm.unrealizedPNL) >= 0 ? '+' : ''}${(
+                        (toNum(confirm.unrealizedPNL) / toNum(confirm.margin)) *
+                        100
+                      ).toFixed(1)}%`
+                    : '—'
+                }
+              />
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
