@@ -37,6 +37,8 @@ import { fmtPrice, fmtUsd, fmtCompact, pnlColor, toNum } from '../../../lib/form
 
 const LEVERAGE_PRESETS = [1, 2, 3, 5, 10, 20, 25, 50, 75, 100, 125]
 
+const BALANCE_PERCENT_PRESETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 25, 50, 75, 100] as const
+
 interface Props {
   symbol: string
   side: 'LONG' | 'SHORT'
@@ -837,14 +839,14 @@ export function OrderTicket({
               />
             )}
             {availableBalance ? (
-              <div className="mt-1 flex gap-1">
-                {[0.25, 0.5, 0.75, 1].map((f) => (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {BALANCE_PERCENT_PRESETS.map((pct) => (
                   <button
-                    key={f}
-                    onClick={() => applyBalancePreset(f)}
+                    key={pct}
+                    onClick={() => applyBalancePreset(pct / 100)}
                     className="rounded-md border border-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
                   >
-                    {f * 100}%
+                    {pct}%
                   </button>
                 ))}
               </div>
