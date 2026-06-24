@@ -3,6 +3,7 @@ import { AppLayout } from './components/layout/AppLayout'
 import { AnalysisPage } from './features/analysis/AnalysisPage'
 import { StatsPage } from './features/stats/StatsPage'
 import { SettingsPage } from './features/settings/SettingsPage'
+import { ChallengePage } from './features/challenge/ChallengePage'
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
         <Route index element={<Navigate to="/analysis" replace />} />
         <Route path="/analysis" element={<AnalysisPage />} />
         <Route path="/stats" element={<StatsPage />} />
+        <Route path="/challenge" element={<ChallengePage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/analysis" replace />} />
       </Route>

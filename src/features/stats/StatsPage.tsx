@@ -39,6 +39,7 @@ import {
 import { EChart } from '../../components/charts/EChart'
 import { Panel, StatCard, Spinner, ErrorNote, EmptyState } from '../../components/ui/primitives'
 import { PositionsTable } from './PositionsTable'
+import { accountEquity } from '../challenge/compute'
 import {
   fmtUsd,
   fmtSignedUsd,
@@ -191,12 +192,7 @@ export function StatsPage() {
   }
 
   const acct = account.data
-  const available = toNum(acct?.available)
-  const margin = toNum(acct?.margin)
-  const frozen = toNum(acct?.frozen)
-  const unrealized = toNum(acct?.crossUnrealizedPNL) + toNum(acct?.isolationUnrealizedPNL)
-  const wallet = available + margin + frozen
-  const equity = wallet + unrealized
+  const { available, margin, frozen, unrealized, wallet, equity } = accountEquity(acct)
   const proj = projectedBalances(
     pending.data ?? [],
     tpslMap,

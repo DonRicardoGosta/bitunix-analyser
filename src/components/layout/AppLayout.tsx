@@ -11,6 +11,7 @@ import { fmtPrice, fmtPct, pnlColor } from '../../lib/format'
 const NAV = [
   { to: '/analysis', label: 'Coin Analysis', icon: '◈' },
   { to: '/stats', label: 'Statistics', icon: '▤' },
+  { to: '/challenge', label: 'Challenge', icon: '◎' },
   { to: '/settings', label: 'Settings', icon: '⚙' },
 ]
 
