@@ -27,6 +27,8 @@ export const config = {
   paperTakerFee: num('PAPER_TAKER_FEE', 0.0006),
   /** Paper-trading slippage (fraction of price) applied against the fill. */
   paperSlippagePct: num('PAPER_SLIPPAGE_PCT', 0.0002),
+  /** Min interval between tick-level TP/SL proximity log lines per position. */
+  tickLogIntervalMs: num('TICK_LOG_INTERVAL_MS', 8000),
 } as const
 
 export type AppConfig = typeof config

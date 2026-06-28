@@ -65,9 +65,14 @@ export function createTrendStrategy(cfg: TrendStrategyConfig): Strategy {
     const meta = {
       bias: Number(bias.toFixed(3)),
       confidence: Number(confidence.toFixed(1)),
+      trend: Number(trend.toFixed(3)),
       rsi: Number(rsiV.toFixed(1)),
       efficiency: Number(er.toFixed(2)),
       atr: Number(atrV.toFixed(6)),
+      emaFast: emaFast !== null ? Number(emaFast.toFixed(6)) : null,
+      emaSlow: emaSlow !== null ? Number(emaSlow.toFixed(6)) : null,
+      minConfidence: Number(params.minConfidence.toFixed(0)),
+      trendThreshold: Number(params.trendThreshold.toFixed(2)),
     }
 
     // ----- Manage an open position -----

@@ -2,6 +2,7 @@ import type { ChallengeSummary } from '@shared/challenge/types'
 import { fmtUsd, fmtSignedUsd, fmtPrice, pnlColor, fmtDuration } from '../../lib/format'
 import { Badge, StatCard } from '../../components/ui/primitives'
 import { RiskLevelControl } from './RiskLevelControl'
+import { CoinStatusPanel } from './CoinStatusPanel'
 import { useStopChallenge } from './useChallengeData'
 import { MODE_META, STATUS_META } from './shared'
 
@@ -66,6 +67,8 @@ export function ChallengeCard({ summary }: { summary: ChallengeSummary }) {
           <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
         </div>
       </div>
+
+      <CoinStatusPanel status={summary.coinStatus} />
 
       {positions.length > 0 && (
         <div className="mt-3 overflow-x-auto">

@@ -51,6 +51,7 @@ function summaryFromDb(run: ChallengeRun): ChallengeSummary {
       openPositions: positions.length,
     },
     positions,
+    coinStatus: [],
   }
 }
 

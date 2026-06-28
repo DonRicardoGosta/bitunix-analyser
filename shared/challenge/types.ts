@@ -112,10 +112,52 @@ export interface ChallengeEvent {
   details?: Record<string, unknown>
 }
 
+/**
+ * Live per-coin decision snapshot (recomputed each state push). Surfaces WHY the
+ * engine is acting or holding for a coin, without waiting for an event.
+ */
+export interface CoinStatus {
+  symbol: string
+  riskLevel: RiskLevel
+  strategyId: string
+  interval: string
+  /** Candles available vs the strategy warmup requirement. */
+  candles: number
+  warmup: number
+  /** Latest decision action for this coin (preview, not logged). */
+  action: DecisionAction
+  reasons: string[]
+  evaluatedAt: number
+  /** Directional bias in -1..+1 and the entry gate it is compared against. */
+  bias: number
+  trendThreshold: number
+  /** Confidence 0..100 and the minimum gate to open a position. */
+  confidence: number
+  minConfidence: number
+  /** Indicator snapshot. */
+  rsi: number
+  trend: number
+  efficiency: number
+  atr: number
+  /** Seconds remaining before a new entry is allowed (0 = ready). */
+  cooldownRemainingSec: number
+  hasPosition: boolean
+  position?: {
+    side: PositionSide
+    /** Live PnL as a percentage of the committed margin. */
+    pnlPctOfMargin: number
+    takeProfitPct: number
+    stopLossPct: number
+  }
+}
+
+export type DecisionAction = 'open_long' | 'open_short' | 'close' | 'hold'
+
 export interface ChallengeSummary {
   run: ChallengeRun
   runtime: ChallengeRuntime
   positions: ChallengePosition[]
+  coinStatus: CoinStatus[]
 }
 
 // ---------------------------------------------------------------------------
