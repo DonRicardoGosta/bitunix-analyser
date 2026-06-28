@@ -1,0 +1,8 @@
+# Note: the backend image is built from the repository ROOT context (so shared/
+# is reachable), which uses the root .dockerignore. This file applies only if
+# the image is ever built with server/ as the context.
+node_modules
+data
+.env
+*.log
+Dockerfile

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -22,8 +23,20 @@ const BITUNIX_WEB_HEADERS: Record<string, string> = {
 // CORS-exempt and connect directly from the browser, so they are not proxied.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      '@shared': fileURLToPath(new URL('./shared', import.meta.url)),
+    },
+  },
   server: {
     proxy: {
+      // Challenge engine backend (REST + WebSocket). Path forwarded verbatim;
+      // backend routes live under /api. `ws: true` proxies the event stream.
+      '/api': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+        ws: true,
+      },
       // Internal Bitunix web API (trigger/stop orders), authenticated by a web
       // session token rather than the API key. Must be matched before /bitunix.
       '/bitunix-web': {

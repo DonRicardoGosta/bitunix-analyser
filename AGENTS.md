@@ -1,6 +1,8 @@
 # Bitunix Futures Analytics — Agent instructions
 
-Frontend-only analytics terminal for Bitunix USD-M futures. No database, no app backend — a React SPA served by nginx (prod) or Vite (dev) with reverse-proxy paths to Bitunix and Binance REST APIs.
+Analytics terminal for Bitunix USD-M futures: a React SPA served by nginx (prod) or Vite (dev) with reverse-proxy paths to Bitunix and Binance REST APIs.
+
+The analytics SPA is frontend-only. The single exception is the **Challenge engine backend** in `server/` — a Node/TypeScript (Fastify + ws) service that autonomously runs multi-coin trading Challenges (Live or Paper) off the Bitunix WebSocket, persists to SQLite, and serves a `/api` HTTP+WS surface to the Challenge feature. Keep the backend scoped to the Challenge engine; do not migrate other app logic into it.
 
 ## Stack
 
@@ -33,11 +35,18 @@ src/
 
 ## Architecture constraints
 
-- **No backend logic.** All signing, credentials, and business logic run in the browser.
-- REST goes through `/bitunix/*` and `/binance/*` proxies (Vite dev / nginx prod). WebSockets connect directly (CORS-exempt).
-- API keys live in `localStorage` via `useCredentials` — never log or persist them elsewhere.
-- `liveTradingEnabled` is a safety gate; real orders require explicit user opt-in.
+- **No backend logic in the SPA.** All signing, credentials, and business logic for the analytics UI run in the browser. The `server/` Challenge engine is the only backend and is scoped to running Challenges.
+- REST goes through `/bitunix/*` and `/binance/*` proxies (Vite dev / nginx prod). WebSockets connect directly (CORS-exempt). The Challenge backend is reached via the `/api` proxy (HTTP + WS).
+- SPA API keys live in `localStorage` via `useCredentials` — never log or persist them elsewhere. When a Challenge starts, the SPA forwards keys to the backend, which stores them AES-256-GCM encrypted at rest (never logged).
+- `liveTradingEnabled` is a safety gate; real orders require explicit user opt-in. Challenges default to Paper; Live requires the gate.
 - Binance panels may show "restricted location" errors; Bitunix features are unaffected.
+
+## Challenge backend (`server/`)
+
+- Stack: Node 22 + TypeScript, Fastify (HTTP) + `ws` (WebSocket), `better-sqlite3`, `zod`.
+- Commands: `npm --prefix server run dev | build | start | typecheck` (listens on `PORT`, default `8090`).
+- Layout: `bitunix/` (Node REST + WS feed + signing), `db/` (SQLite + repos), `crypto.ts`, `exec/` (Live/Paper engines), `strategy/` (registry + default + per-coin modules), `challenge/` (manager, runner, risk, capital), `events/`, `routes/`, `ws/`.
+- Shares domain + contract types with the SPA via `shared/challenge/types.ts` and indicator math via `shared/indicators/`.
 
 ## Conventions
 

@@ -1,0 +1,89 @@
+// Kline interval constants + Bitunix WS channel mapping, shared by SPA + backend.
+
+export type KlineInterval =
+  | '1m'
+  | '3m'
+  | '5m'
+  | '15m'
+  | '30m'
+  | '1h'
+  | '2h'
+  | '4h'
+  | '6h'
+  | '8h'
+  | '12h'
+  | '1d'
+  | '3d'
+  | '1w'
+  | '1M'
+
+const WS_CHANNEL: Record<KlineInterval, string> = {
+  '1m': 'market_kline_1min',
+  '3m': 'market_kline_3min',
+  '5m': 'market_kline_5min',
+  '15m': 'market_kline_15min',
+  '30m': 'market_kline_30min',
+  '1h': 'market_kline_60min',
+  '2h': 'market_kline_2h',
+  '4h': 'market_kline_4h',
+  '6h': 'market_kline_6h',
+  '8h': 'market_kline_8h',
+  '12h': 'market_kline_12h',
+  '1d': 'market_kline_1day',
+  '3d': 'market_kline_3day',
+  '1w': 'market_kline_1week',
+  '1M': 'market_kline_1month',
+}
+
+const MARK_WS_CHANNEL: Record<KlineInterval, string> = Object.fromEntries(
+  Object.entries(WS_CHANNEL).map(([k, v]) => [k, v.replace('market_', 'mark_')]),
+) as Record<KlineInterval, string>
+
+const SECONDS: Record<KlineInterval, number> = {
+  '1m': 60,
+  '3m': 180,
+  '5m': 300,
+  '15m': 900,
+  '30m': 1800,
+  '1h': 3600,
+  '2h': 7200,
+  '4h': 14400,
+  '6h': 21600,
+  '8h': 28800,
+  '12h': 43200,
+  '1d': 86400,
+  '3d': 259200,
+  '1w': 604800,
+  '1M': 2592000,
+}
+
+export function klineChannel(interval: KlineInterval, mark = false): string {
+  return (mark ? MARK_WS_CHANNEL : WS_CHANNEL)[interval]
+}
+
+export function intervalSeconds(interval: KlineInterval): number {
+  return SECONDS[interval]
+}
+
+/** Higher timeframe used for trend confirmation (~4-8x the base interval). */
+const HIGHER_TF: Record<KlineInterval, KlineInterval> = {
+  '1m': '15m',
+  '3m': '30m',
+  '5m': '1h',
+  '15m': '4h',
+  '30m': '4h',
+  '1h': '4h',
+  '2h': '1d',
+  '4h': '1d',
+  '6h': '1d',
+  '8h': '1d',
+  '12h': '1w',
+  '1d': '1w',
+  '3d': '1w',
+  '1w': '1w',
+  '1M': '1M',
+}
+
+export function higherTimeframe(interval: KlineInterval): KlineInterval {
+  return HIGHER_TF[interval] ?? interval
+}

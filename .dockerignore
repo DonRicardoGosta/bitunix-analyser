@@ -1,3 +1,4 @@
+**/node_modules
 node_modules
 dist
 .git
@@ -7,4 +8,7 @@ npm-debug.log*
 .DS_Store
 .vscode
 .idea
+.cursor
 README.md
+server/data
+data

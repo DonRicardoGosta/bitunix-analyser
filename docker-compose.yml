@@ -3,6 +3,54 @@ services:
     build: .
     image: bitunix-analytics
     container_name: bitunix-analytics
+    depends_on:
+      - challenge-backend
     ports:
       - "8080:80"
+    networks:
+      - appnet
     restart: unless-stopped
+    # nginx static hosting + reverse proxy is lightweight.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          cpus: "0.10"
+          memory: 32M
+
+  challenge-backend:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: bitunix-challenge-backend
+    container_name: bitunix-challenge-backend
+    environment:
+      - PORT=8090
+      - DATA_DIR=/data
+      # Optional: provide a 32-byte key (hex/base64). Generated + persisted if unset.
+      - CHALLENGE_ENCRYPTION_KEY=${CHALLENGE_ENCRYPTION_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - MARGIN_COIN=${MARGIN_COIN:-USDT}
+    volumes:
+      - challenge-data:/data
+    networks:
+      - appnet
+    restart: unless-stopped
+    # Node service: WS feed + strategy loops + SQLite.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+networks:
+  appnet:
+    driver: bridge
+
+volumes:
+  challenge-data:

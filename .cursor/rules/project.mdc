@@ -6,7 +6,9 @@ alwaysApply: true
 
 ## What this repo is
 
-A **frontend-only** Bitunix USD-M futures analytics terminal. Static React SPA + nginx reverse proxy. No database, no server-side business logic.
+A Bitunix USD-M futures analytics terminal. Static React SPA + nginx reverse proxy.
+
+The SPA itself stays **frontend-only** (no business logic in a server for the analytics UI). The one intentional exception is the **Challenge engine backend** under `server/` — a Node/TypeScript (Fastify + ws) service that autonomously runs multi-coin trading Challenges (Live or Paper). It connects to the Bitunix WebSocket, runs per-coin strategies, persists state in SQLite, and exposes a `/api` HTTP+WS surface consumed by the Challenge feature. Do not move analytics/exchange logic for the rest of the app into the backend; keep the backend scoped to the Challenge engine.
 
 ## Do
 
@@ -21,7 +23,7 @@ A **frontend-only** Bitunix USD-M futures analytics terminal. Static React SPA +
 
 ## Don't
 
-- Add a backend, database, or server-side API routes.
+- Add a backend, database, or server-side API routes **for the analytics SPA**. The `server/` Challenge engine is the only sanctioned backend; everything outside the Challenge feature stays in the browser.
 - Log, commit, or expose API keys/secrets.
 - Edit `dist/`, `node_modules/`, or generated output.
 - Disable the `liveTradingEnabled` safety gate without explicit user request.
@@ -36,3 +38,5 @@ A **frontend-only** Bitunix USD-M futures analytics terminal. Static React SPA +
 - `src/features/analysis/setup/engine.ts` — trade setup / signal orchestration
 - `src/lib/bitunix/rest.ts` — signed Bitunix REST client
 - `eslint.config.js` — `react-hooks/set-state-in-effect` and `purity` are intentionally off
+- `shared/challenge/types.ts` — domain + `/api` contract types shared by the SPA and the Challenge backend
+- `server/` — Challenge engine backend (Fastify + ws, SQLite, per-coin strategies, Live/Paper execution)
